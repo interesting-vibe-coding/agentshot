@@ -19,6 +19,8 @@
 
 Screenshots pasted into AI agents are needlessly huge. A Retina grab is millions of pixels — and for vision models, **tokens scale with pixels, not file size**. AgentShot caps every screenshot at the model's optimal resolution before it hits your clipboard, so you stop paying for pixels the model never uses.
 
+<p align="center"><img src="assets/before-after.png" width="92%"></p>
+
 - ⚡ **One hotkey** (`⌘⇧2`) → native region select → compressed → clipboard. Paste anywhere.
 - 🎯 **Smart cap**: long edge ≤ 1568px (Claude's sweet spot) + JPEG q82, hard-capped **< 1000KB**.
 - 🪶 **Featherweight**: menubar-only, no Dock icon, **zero third-party dependencies**, pure native macOS.
