@@ -357,6 +357,10 @@ typedef NS_ENUM(NSInteger, AnnotTool) { AnnotRect=0, AnnotArrow, AnnotText, Anno
 
 // Start/refresh the event tap for the current shortcut; report if it couldn't be claimed.
 - (void)applyShortcut:(BOOL)announce {
+    // Only create the event tap when already trusted — calling CGEventTapCreate
+    // while untrusted makes macOS pop the Accessibility prompt unprompted. We let
+    // the prompt happen ONLY when the user ticks the checkbox (obToggleAccessibility).
+    if (!AXIsProcessTrusted()) return;
     BOOL ok = [self.keyTap restartWithCode:(CGKeyCode)CurrentHKCode()
                                      flags:CGFlagsFromCarbon(CurrentHKMods())];
     NSString *sc = ShortcutLabel(CurrentHKCode(), CurrentHKMods());
