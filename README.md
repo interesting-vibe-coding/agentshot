@@ -79,17 +79,17 @@ First launch prompts for **Screen Recording** permission (needed to capture). A 
 
 > Clipboard note: macOS may also expose an uncompressed TIFF representation. It's the **same 1568px pixels**, so token/cost savings hold regardless of which representation an app reads; only raw-byte size differs.
 
-## Config
+## Settings
 
-Edit the constants at the top of `Sources/AgentShot/AgentShot.m`:
+Set everything from the menubar icon — no config files. Under **Quality**, pick a tier (persisted across launches):
 
-```objc
-static const NSInteger kMaxLongEdge = 1568;        // long-edge cap (Claude sweet spot; 2560 for Opus 4.7+)
-static const CGFloat   kStartQ      = 0.82;        // starting JPEG quality
-static const NSInteger kByteLimit   = 1000 * 1024; // hard cap: < 1000KB
-```
+| Tier | Long edge | Best for |
+|---|---|---|
+| Max savings | 1024px | chat/UI screenshots, smallest tokens |
+| **Balanced** (default) | **1568px** | general use — Claude's sweet spot |
+| High fidelity | 2560px | dense tables / code / tiny text |
 
-Change the hotkey via `kVK_ANSI_2` / `cmdKey | shiftKey` in `applicationDidFinishLaunching`.
+Every capture is still hard-capped to **< 1000KB** automatically.
 
 ## Stack
 

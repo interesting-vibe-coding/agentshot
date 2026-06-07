@@ -77,17 +77,17 @@ open dist/AgentShot.app
 
 > 剪贴板说明：macOS 可能额外暴露一个未压缩 TIFF 表示，但**像素同为 1568px**，所以无论 app 读哪个表示，token/费用节省都成立，仅原始字节大小有别。
 
-## 配置
+## 设置
 
-改 `Sources/AgentShot/AgentShot.m` 顶部常量：
+全部在菜单栏图标里设，不用改任何配置文件。**压缩档位（Quality）** 三选一（自动记住）：
 
-```objc
-static const NSInteger kMaxLongEdge = 1568;        // 长边上限（Claude 甜点；Opus 4.7+ 可设 2560）
-static const CGFloat   kStartQ      = 0.82;        // JPEG 起始质量
-static const NSInteger kByteLimit   = 1000 * 1024; // 硬上限 < 1000KB
-```
+| 档位 | 长边 | 适用 |
+|---|---|---|
+| 极致省 | 1024px | 对话/UI 截图，token 最省 |
+| **平衡**（默认） | **1568px** | 通用 —— Claude 甜点 |
+| 高保真 | 2560px | 密集表格 / 代码 / 小字 |
 
-快捷键改 `applicationDidFinishLaunching` 里的 `kVK_ANSI_2` / `cmdKey | shiftKey`。
+无论哪档，每张图都自动硬压到 **< 1000KB**。
 
 ## License
 

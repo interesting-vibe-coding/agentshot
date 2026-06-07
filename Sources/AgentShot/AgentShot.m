@@ -11,14 +11,21 @@
 #import <UniformTypeIdentifiers/UTCoreTypes.h>
 #import <Carbon/Carbon.h>
 
-// MARK: - Config (token sweet spot + hard byte cap; see README)
-static const NSInteger   kMaxLongEdge = 1568;        // Claude 1.15MP sweet spot
-static const NSInteger   kByteLimit   = 1000 * 1024; // hard cap: < 1000KB
+// MARK: - Config (token sweet spot + hard byte cap)
+// The long-edge cap is user-adjustable from the menubar and persisted in
+// NSUserDefaults — no need to edit code. The < 1000KB byte cap is always on.
+static const NSInteger   kDefaultEdge = 1568;        // default long-edge cap (Claude sweet spot)
+static const NSInteger   kByteLimit   = 1000 * 1024; // hard cap: < 1000KB (always)
 static const CGFloat     kStartQ      = 0.82;        // <1.3pp vision accuracy loss
 static const CGFloat     kQ[]         = {0.82, 0.72, 0.62, 0.52, 0.42, 0.34};
 static const NSInteger   kQn          = 6;
-static const NSInteger   kEdges[]     = {1568, 1280, 1024, 832};
-static const NSInteger   kEdgesN      = 4;
+static const NSInteger   kFallback[]  = {1280, 1024, 832}; // extra downscales if byte cap unmet
+
+static NSString * const kEdgeKey = @"maxLongEdge";   // NSUserDefaults key
+static NSInteger CurrentMaxEdge(void) {
+    NSInteger v = [[NSUserDefaults standardUserDefaults] integerForKey:kEdgeKey];
+    return v > 0 ? v : kDefaultEdge;
+}
 
 // MARK: - Compression result
 typedef struct {
@@ -62,8 +69,11 @@ static NSData *ProcessImage(NSURL *url, ShotInfo *info) {
     info->srcBytes = (NSInteger)[[NSData dataWithContentsOfURL:url] length];
 
     NSData *best = nil; ShotInfo bestInfo = *info;
-    for (NSInteger e = 0; e < kEdgesN; e++) {
-        CGImageRef img = CreateDownscaled(src, kEdges[e]);
+    NSInteger maxEdge = CurrentMaxEdge();
+    NSMutableArray<NSNumber *> *edges = [NSMutableArray arrayWithObject:@(maxEdge)];
+    for (int fi = 0; fi < 3; fi++) if (kFallback[fi] < maxEdge) [edges addObject:@(kFallback[fi])];
+    for (NSNumber *en in edges) {
+        CGImageRef img = CreateDownscaled(src, en.integerValue);
         if (!img) continue;
         NSInteger w = CGImageGetWidth(img), h = CGImageGetHeight(img);
         for (NSInteger qi = 0; qi < kQn; qi++) {
@@ -120,12 +130,29 @@ static OSStatus HotKeyHandler(EventHandlerCallRef next, EventRef e, void *ud) {
     self.statusItem.button.toolTip = @"AgentShot — 截图自动压缩 (⌘⇧2)";
 
     NSMenu *menu = [[NSMenu alloc] init];
-    [menu addItemWithTitle:@"截图并压缩  ⌘⇧2" action:@selector(capture) keyEquivalent:@""];
+    [menu addItemWithTitle:@"Capture & compress  截图并压缩  ⌘⇧2" action:@selector(capture) keyEquivalent:@""];
     [menu addItem:[NSMenuItem separatorItem]];
-    [[menu addItemWithTitle:[NSString stringWithFormat:@"策略: 长边≤%ldpx · JPEG q%ld · <1000KB",
-        (long)kMaxLongEdge, (long)(kStartQ*100)] action:nil keyEquivalent:@""] setEnabled:NO];
+
+    // Quality / resolution tier — chosen here, persisted in NSUserDefaults.
+    NSMenuItem *tierItem = [[NSMenuItem alloc] initWithTitle:@"Quality  压缩档位" action:nil keyEquivalent:@""];
+    NSMenu *tierMenu = [[NSMenu alloc] init];
+    NSArray *tiers = @[@[@"Max savings  极致省 · 1024px", @1024],
+                       @[@"Balanced  平衡 · 1568px", @1568],
+                       @[@"High fidelity  高保真 · 2560px", @2560]];
+    NSInteger cur = CurrentMaxEdge();
+    for (NSArray *t in tiers) {
+        NSMenuItem *it = [[NSMenuItem alloc] initWithTitle:t[0] action:@selector(setTier:) keyEquivalent:@""];
+        it.tag = [t[1] integerValue];
+        it.state = (it.tag == cur) ? NSControlStateValueOn : NSControlStateValueOff;
+        it.target = self;
+        [tierMenu addItem:it];
+    }
+    tierItem.submenu = tierMenu;
+    [menu addItem:tierItem];
+    [[menu addItemWithTitle:@"Always compressed to < 1000KB" action:nil keyEquivalent:@""] setEnabled:NO];
+
     [menu addItem:[NSMenuItem separatorItem]];
-    [menu addItemWithTitle:@"退出 AgentShot" action:@selector(terminate:) keyEquivalent:@"q"];
+    [menu addItemWithTitle:@"Quit AgentShot" action:@selector(terminate:) keyEquivalent:@"q"];
     self.statusItem.menu = menu;
 
     // ⌘⇧2 global hotkey (Carbon; no Accessibility permission needed)
@@ -135,6 +162,12 @@ static OSStatus HotKeyHandler(EventHandlerCallRef next, EventRef e, void *ud) {
     EventHotKeyRef ref;
     RegisterEventHotKey(kVK_ANSI_2, cmdKey | shiftKey, hkid,
                         GetApplicationEventTarget(), 0, &ref);
+}
+
+- (void)setTier:(NSMenuItem *)sender {
+    [[NSUserDefaults standardUserDefaults] setInteger:sender.tag forKey:kEdgeKey];
+    for (NSMenuItem *it in sender.menu.itemArray)
+        it.state = (it == sender) ? NSControlStateValueOn : NSControlStateValueOff;
 }
 
 - (void)capture {
