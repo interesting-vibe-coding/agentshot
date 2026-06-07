@@ -11,6 +11,7 @@
 #import <UniformTypeIdentifiers/UTCoreTypes.h>
 #import <Carbon/Carbon.h>
 #import <ServiceManagement/ServiceManagement.h>
+#import <CoreGraphics/CoreGraphics.h>
 #import <objc/runtime.h>
 
 // MARK: - Config / persisted settings
@@ -31,11 +32,11 @@ static NSInteger CurrentMaxEdge(void) {
 }
 static UInt32 CurrentHKCode(void) {
     id v = [[NSUserDefaults standardUserDefaults] objectForKey:kHKCodeKey];
-    return v ? (UInt32)[v integerValue] : (UInt32)kVK_F1;   // default F1
+    return v ? (UInt32)[v integerValue] : (UInt32)kVK_ANSI_2;   // default ⌘⇧2 (F1 collides with Snipaste/brightness)
 }
 static UInt32 CurrentHKMods(void) {
     id v = [[NSUserDefaults standardUserDefaults] objectForKey:kHKModKey];
-    return v ? (UInt32)[v integerValue] : 0;
+    return v ? (UInt32)[v integerValue] : (UInt32)(cmdKey|shiftKey);
 }
 // Human-readable shortcut label, e.g. "F1" or "⌘⇧2".
 static NSString *ShortcutLabel(UInt32 code, UInt32 mods) {
@@ -107,13 +108,13 @@ static void PutOnPasteboard(NSData *data, NSString *type) {
 
 // MARK: - HotKey (Carbon; re-registerable)
 @interface HotKey : NSObject
-- (void)reregisterCode:(UInt32)code mods:(UInt32)mods;
+- (OSStatus)reregisterCode:(UInt32)code mods:(UInt32)mods;
 @end
 @implementation HotKey {
     EventHotKeyRef _ref; BOOL _handlerInstalled;
 }
 static OSStatus HKHandler(EventHandlerCallRef n, EventRef e, void *ud);
-- (void)reregisterCode:(UInt32)code mods:(UInt32)mods {
+- (OSStatus)reregisterCode:(UInt32)code mods:(UInt32)mods {
     if (!_handlerInstalled) {
         EventTypeSpec spec = { kEventClassKeyboard, kEventHotKeyPressed };
         InstallEventHandler(GetApplicationEventTarget(), HKHandler, 1, &spec, NULL, NULL);
@@ -121,7 +122,7 @@ static OSStatus HKHandler(EventHandlerCallRef n, EventRef e, void *ud);
     }
     if (_ref) { UnregisterEventHotKey(_ref); _ref = NULL; }
     EventHotKeyID hkid = { 'ASHT', 1 };
-    RegisterEventHotKey(code, mods, hkid, GetApplicationEventTarget(), 0, &_ref);
+    return RegisterEventHotKey(code, mods, hkid, GetApplicationEventTarget(), 0, &_ref);
 }
 @end
 
@@ -157,10 +158,25 @@ static OSStatus HKHandler(EventHandlerCallRef n, EventRef e, void *ud) {
     [self rebuildMenu];
 
     self.hotKey = [HotKey new];
-    [self.hotKey reregisterCode:CurrentHKCode() mods:CurrentHKMods()];
+    [self applyShortcut:NO];
+
+    // Proactively register/prompt Screen Recording so capture works the first time
+    // (and the app appears in System Settings → Privacy → Screen Recording).
+    if (@available(macOS 11.0, *)) CGRequestScreenCaptureAccess();
 
     if (![[NSUserDefaults standardUserDefaults] boolForKey:kOnboardedKey])
         [self showOnboarding];
+}
+
+// Register the current shortcut and tell the user if it couldn't be claimed
+// (e.g. another app like Snipaste already owns it).
+- (void)applyShortcut:(BOOL)announce {
+    OSStatus s = [self.hotKey reregisterCode:CurrentHKCode() mods:CurrentHKMods()];
+    NSString *sc = ShortcutLabel(CurrentHKCode(), CurrentHKMods());
+    if (s != noErr)
+        [self flash:[NSString stringWithFormat:@"⚠︎ %@ in use — pick another in the menu", sc]];
+    else if (announce)
+        [self flash:[NSString stringWithFormat:@"shortcut → %@", sc]];
 }
 
 // ---- Menu ----
@@ -219,7 +235,7 @@ static OSStatus HKHandler(EventHandlerCallRef n, EventRef e, void *ud) {
     UInt32 code = (UInt32)sender.tag, mods = (UInt32)[sender.representedObject integerValue];
     [[NSUserDefaults standardUserDefaults] setInteger:code forKey:kHKCodeKey];
     [[NSUserDefaults standardUserDefaults] setInteger:mods forKey:kHKModKey];
-    [self.hotKey reregisterCode:code mods:mods];
+    [self applyShortcut:YES];
     [self rebuildMenu];
 }
 - (void)setTier:(NSMenuItem *)sender {
