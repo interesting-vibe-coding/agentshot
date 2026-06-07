@@ -636,9 +636,18 @@ typedef NS_ENUM(NSInteger, AnnotTool) { AnnotRect=0, AnnotArrow, AnnotText, Anno
 
 // ---- First-run onboarding (with shortcut picker + conflict/permission hint) ----
 - (void)showOnboarding {
+    // Already showing (e.g. relaunched while open): just bring it forward.
+    if (self.onboard) {
+        [NSApp activateIgnoringOtherApps:YES];
+        [self.onboard makeKeyAndOrderFront:nil];
+        [self.onboard orderFrontRegardless];
+        [self refreshOnboardingState];
+        return;
+    }
     NSWindow *w = [[NSWindow alloc] initWithContentRect:NSMakeRect(0,0,480,360)
         styleMask:(NSWindowStyleMaskTitled|NSWindowStyleMaskClosable) backing:NSBackingStoreBuffered defer:NO];
     w.title=@"Welcome to AgentShot"; NSView *c=w.contentView;
+    w.level = NSFloatingWindowLevel;   // float above other apps' windows on relaunch
 
     NSTextField *h=[NSTextField labelWithString:@"📸 AgentShot"];
     h.font=[NSFont boldSystemFontOfSize:22]; h.frame=NSMakeRect(28,304,420,32); [c addSubview:h];
@@ -684,7 +693,13 @@ typedef NS_ENUM(NSInteger, AnnotTool) { AnnotRect=0, AnnotArrow, AnnotText, Anno
     // Re-check when the user returns from System Settings (Accessibility can update live).
     [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(refreshOnboardingState)
                                                  name:NSApplicationDidBecomeActiveNotification object:nil];
-    [w center]; [NSApp activateIgnoringOtherApps:YES]; [w makeKeyAndOrderFront:nil];
+    [w center]; [NSApp activateIgnoringOtherApps:YES]; [w makeKeyAndOrderFront:nil]; [w orderFrontRegardless];
+    // Background relaunch (after macOS "Quit & Reopen") doesn't auto-foreground an
+    // LSUIElement app — re-assert front shortly after launch so the window is visible.
+    __weak typeof(self) ws=self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(0.4*NSEC_PER_SEC)),dispatch_get_main_queue(),^{
+        if (ws.onboard) { [NSApp activateIgnoringOtherApps:YES]; [ws.onboard makeKeyAndOrderFront:nil]; [ws.onboard orderFrontRegardless]; }
+    });
 }
 // map popup index -> (code,mods)
 // Drive the onboarding UI off REAL permission state (not what the user clicked).
