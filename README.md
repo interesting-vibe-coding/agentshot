@@ -59,16 +59,10 @@ The win depends on whether your client downscales *before* sending to the model:
 ## Install
 
 ```bash
-git clone https://github.com/interesting-vibe-coding/agentshot
-cd agentshot
-./build.sh                 # clang builds dist/AgentShot.app (zero deps)
-open dist/AgentShot.app
-
-# verify the pipeline without the GUI:
-./dist/AgentShot.app/Contents/MacOS/AgentShot --selftest your-screenshot.png
+curl -fsSL https://raw.githubusercontent.com/interesting-vibe-coding/agentshot/main/install.sh | bash
 ```
 
-First launch prompts for **Screen Recording** permission (needed to capture). A Swift implementation is also included — build it with `USE_SWIFT=1 ./build.sh`.
+That's it — it downloads AgentShot, installs to `/Applications`, and launches it. First capture asks for **Screen Recording** permission (needed to capture); allow it, then re-open AgentShot.
 
 ## Usage
 

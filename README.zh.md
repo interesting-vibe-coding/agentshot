@@ -58,16 +58,10 @@
 ## 安装
 
 ```bash
-git clone https://github.com/interesting-vibe-coding/agentshot
-cd agentshot
-./build.sh                 # clang 编译出 dist/AgentShot.app（零依赖）
-open dist/AgentShot.app
-
-# 不弹窗验证压缩管线：
-./dist/AgentShot.app/Contents/MacOS/AgentShot --selftest 你的截图.png
+curl -fsSL https://raw.githubusercontent.com/interesting-vibe-coding/agentshot/main/install.sh | bash
 ```
 
-首次运行会请求**屏幕录制**权限（截图必需）。
+就这一行 —— 自动下载、装到 `/Applications` 并启动。首次截图会请求**屏幕录制**权限（截图必需），授权后重新打开 AgentShot 即可。
 
 ## 用法
 
