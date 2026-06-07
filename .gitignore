@@ -5,3 +5,7 @@ build/
 dist/
 *.xcodeproj
 .swiftpm/
+
+# python
+__pycache__/
+*.pyc

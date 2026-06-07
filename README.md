@@ -48,25 +48,25 @@ AgentShot 同时拧两个杠杆：
 | AgentShot 后 | 1568×1018 | **171 KB** | **~2128** |
 | | | | **省 73%** |
 
+> 这里的 token 数是「按发送像素估算」（`w·h/750`）。它直接反映**文件字节**节省，以及**按发送分辨率计费的模型**（GPT 等）的 token 节省。Claude 会在服务端自动降采样后再计费，所以 Claude 的计费 token 节省接近 0——详见下方 Benchmark 实测。
+
 ## Benchmark：压缩前后模型理解 & 省钱
 
-「压完会不会让 AI 看不清？」实测三个数据集（各 10 随机样本 seed=42，两模型经 OpenRouter，压缩参数 1568/q82/<1000KB）：
+「压完会不会让 AI 看不清？省多少 token？」小样本实测（各 10 随机样本 seed=42，两模型经 OpenRouter，压缩参数 1568/q82/<1000KB）。**目前可信的结论来自 DocVQA**（文字最密、最考验压缩，原图平均长边 2081px → 压到 1519px，确实降了分辨率）：
 
-| Bench | 指标 | claude-sonnet-4.6 orig→comp | gpt-5.5 orig→comp |
-|---|---|---|---|
-| DocVQA | ANLS | 0.863 → 0.885 (**+0.022**) | 1.000 → 1.000 |
-| ScreenSpot-Pro | acc | 0.000 → 0.300 (**+0.30**) | N/A¹ |
-| MMStar² | acc | 0.40 → 0.30 | 0.30 → 0.40 |
+| DocVQA (ANLS) | 准确率 原图→压缩 | 图像 token 原图→压缩 |
+|---|---|---|
+| claude-sonnet-4.6 | 0.863 → 0.885（不降反升） | 15488 → 15488（**没变**） |
+| gpt-5.5 | 1.000 → 1.000（满分持平） | 37929 → 19082（**省 49.7%**） |
 
-关键数字：
+两条结论：
 
-- **平均准确率变化 ≈ 0**：压缩后没有实质性下降，DocVQA 基本无损，高分辨率截图定位（ScreenSpot）Claude 反而从 0.0→0.3。
-- **平均 token 节省**：gpt-5.5 在 DocVQA 上 token 砍掉 **≈49.7%**（按像素计费的模型）；Claude 计费 token 不随分辨率变化（省的是字节/带宽）。
-- **每 1000 张截图省钱**：gpt-5.5 DocVQA 实测 **≈ $9.42**；一张 4K 截图按 Claude 公式 11059→1844 token（省 83%），每 1000 张理论省 **≈ $27.65**。
+- **压缩不损识别**：在最难的文字任务上，两个模型准确率都没有实质下降。
+- **「省 token」分模型，别被笼统说法误导**：
+  - **按发送分辨率计费的模型（GPT 等）** → 真实省约一半。gpt-5.5 在 DocVQA 上 token 砍掉 **≈49.7%**，按 OpenRouter 单价 $5/Mtok ≈ **每 1000 张截图省 $9.42**。
+  - **Claude** → 计费 token **几乎不变**。因为 Anthropic 服务端会把 >1568px 的图自动降采样后再计费（相当于它已替你压了）。所以本工具在 Claude 上省的是**上传字节/带宽**、以及绕过请求 32MB / 单请求图片数等限制，**不是 token 费用**。
 
-> ¹ ScreenSpot · gpt-5.5 因 OpenRouter 额度耗尽未跑完，标 N/A。² MME-RealWorld 不可用，回退 MMStar；图太小无法演示 token 节省，准确率 ±0.1 属 n=10 噪声。
->
-> 完整方法、单价、费用推算与诚实结论见 **[bench/RESULTS.md](bench/RESULTS.md)**。
+> ⚠️ 诚实标注：ScreenSpot-Pro 与 MMStar 两项目前**不作为结论**——ScreenSpot 因 OpenRouter 额度中途耗尽（GPT 只跑了 4 个原图）且 grounding 评分在 n=10 下噪声大；MMStar 图太小（424px）根本不触发压缩、准确率 ±0.1 属噪声。完整方法/单价/局限见 **[bench/RESULTS.md](bench/RESULTS.md)**，补足额度后重跑 `bench/run_screenspot.py` 可补全。
 
 ## 安装 / 构建
 
