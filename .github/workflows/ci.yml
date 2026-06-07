@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-and-test:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build (clang, ObjC)
+        run: ./build.sh
+
+      - name: Verify .app bundle
+        run: test -x dist/AgentShot.app/Contents/MacOS/AgentShot
+
+      - name: Compression pipeline self-test
+        env:
+          CI: "1"   # skip NSPasteboard write on the headless runner
+        run: |
+          set -euo pipefail
+          OUT="$(./dist/AgentShot.app/Contents/MacOS/AgentShot --selftest tests/fixture.png)"
+          echo "$OUT"
+
+          # 1) every screenshot must end up under the 1000KB hard cap
+          echo "$OUT" | grep -q "<1000KB: YES" || { echo "::error::byte cap not met"; exit 1; }
+
+          # 2) long edge must be capped at <= 1568 (token sweet spot)
+          OUTW=$(echo "$OUT" | awk '/^out/{split($2,a,"x"); print a[1]}')
+          OUTH=$(echo "$OUT" | awk '/^out/{split($2,a,"x"); print a[2]}')
+          LONG=$(( OUTW > OUTH ? OUTW : OUTH ))
+          echo "long edge = $LONG"
+          [ "$LONG" -le 1568 ] || { echo "::error::long edge $LONG > 1568"; exit 1; }
+
+          # 3) compression must actually reduce tokens vs the original
+          echo "$OUT" | grep -qE "saved [1-9][0-9]*%" || { echo "::error::no token savings"; exit 1; }
+
+          echo "✓ pipeline OK"

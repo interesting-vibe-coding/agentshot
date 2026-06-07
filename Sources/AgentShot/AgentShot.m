@@ -62,12 +62,6 @@ static BOOL AXTrusted(BOOL prompt) {
     NSDictionary *o = @{ (__bridge id)kAXTrustedCheckOptionPrompt: @(prompt) };
     return AXIsProcessTrustedWithOptions((__bridge CFDictionaryRef)o);
 }
-// Real, current permission state (drives the onboarding checkboxes).
-static BOOL ScreenGranted(void) {
-    if (@available(macOS 10.15, *)) return CGPreflightScreenCaptureAccess();
-    return YES;
-}
-static BOOL AXGranted(void) { return AXIsProcessTrusted(); }
 
 
 // MARK: - Compression
@@ -353,8 +347,9 @@ typedef NS_ENUM(NSInteger, AnnotTool) { AnnotRect=0, AnnotArrow, AnnotText, Anno
     self.keyTap.onFire = ^{ [ws capture]; };
     [self applyShortcut:NO];
 
-    // Show onboarding until BOTH permissions are actually granted (self-correcting).
-    if (!(ScreenGranted() && AXGranted()))
+    // Ground truth = did the event tap actually load? If not, the shortcut can't
+    // work (Accessibility not granted yet) -> onboarding. Self-correcting.
+    if (!self.keyTap.isActive)
         [self showOnboarding];
 }
 
@@ -673,16 +668,17 @@ typedef NS_ENUM(NSInteger, AnnotTool) { AnnotRect=0, AnnotArrow, AnnotText, Anno
     [self obPickShortcut:pop];
 
     self.obLogin=[NSButton checkboxWithTitle:@"Launch AgentShot at login" target:nil action:nil];
-    self.obLogin.frame=NSMakeRect(26,50,420,22); self.obLogin.state=NSControlStateValueOn; [c addSubview:self.obLogin];
+    self.obLogin.frame=NSMakeRect(26,46,420,22); self.obLogin.state=NSControlStateValueOn; [c addSubview:self.obLogin];
 
-    self.obScreenCb=[NSButton checkboxWithTitle:@"Allow Screen Recording" target:self action:@selector(obToggleScreen:)];
-    self.obScreenCb.frame=NSMakeRect(26,98,420,22); [c addSubview:self.obScreenCb];
     self.obAxCb=[NSButton checkboxWithTitle:@"Allow Accessibility (required for the global shortcut)" target:self action:@selector(obToggleAccessibility:)];
-    self.obAxCb.frame=NSMakeRect(26,74,430,22); [c addSubview:self.obAxCb];
+    self.obAxCb.frame=NSMakeRect(26,84,430,22); [c addSubview:self.obAxCb];
 
-    NSTextField *hint=[NSTextField labelWithString:@"Tick each box to grant. After enabling, you may need to quit & reopen AgentShot."];
-    hint.frame=NSMakeRect(26,28,432,16); hint.font=[NSFont systemFontOfSize:10];
+    NSTextField *hint=[NSTextField wrappingLabelWithString:@"Tick the box, enable AgentShot in System Settings, then click Restart."];
+    hint.frame=NSMakeRect(26,62,432,18); hint.font=[NSFont systemFontOfSize:10];
     hint.textColor=[NSColor secondaryLabelColor]; [c addSubview:hint];
+
+    NSButton *restart=[NSButton buttonWithTitle:@"Restart" target:self action:@selector(relaunchApp)];
+    restart.frame=NSMakeRect(286,18,86,30); restart.bezelStyle=NSBezelStyleRounded; [c addSubview:restart];
 
     self.obStart=[NSButton buttonWithTitle:@"Start" target:self action:@selector(finishOnboarding:)];
     self.obStart.frame=NSMakeRect(380,18,80,30); self.obStart.bezelStyle=NSBezelStyleRounded; [c addSubview:self.obStart];
@@ -690,37 +686,42 @@ typedef NS_ENUM(NSInteger, AnnotTool) { AnnotRect=0, AnnotArrow, AnnotText, Anno
 
     self.onboard=w;
     [self refreshOnboardingState];
-    // Re-check when the user returns from System Settings (Accessibility can update live).
+    // Re-check when the user returns from System Settings.
     [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(refreshOnboardingState)
                                                  name:NSApplicationDidBecomeActiveNotification object:nil];
     [w center]; [NSApp activateIgnoringOtherApps:YES]; [w makeKeyAndOrderFront:nil]; [w orderFrontRegardless];
-    // Background relaunch (after macOS "Quit & Reopen") doesn't auto-foreground an
-    // LSUIElement app — re-assert front shortly after launch so the window is visible.
     __weak typeof(self) ws=self;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(0.4*NSEC_PER_SEC)),dispatch_get_main_queue(),^{
         if (ws.onboard) { [NSApp activateIgnoringOtherApps:YES]; [ws.onboard makeKeyAndOrderFront:nil]; [ws.onboard orderFrontRegardless]; }
     });
 }
 // map popup index -> (code,mods)
-// Drive the onboarding UI off REAL permission state (not what the user clicked).
+// Drive the onboarding UI off the GROUND TRUTH: did the event tap actually load?
+// (Permission APIs cache stale values in-process; the live tap does not.)
 - (void)refreshOnboardingState {
     if (!self.onboard) return;
-    BOOL s = ScreenGranted(), a = AXGranted();
-    self.obScreenCb.state = s ? NSControlStateValueOn : NSControlStateValueOff;
-    self.obScreenCb.enabled = !s;     // granted -> checked & locked
-    self.obAxCb.state = a ? NSControlStateValueOn : NSControlStateValueOff;
-    self.obAxCb.enabled = !a;
-    self.obStart.enabled = (s && a);  // only enabled when BOTH are really granted
-}
-- (void)obToggleScreen:(NSButton*)sender {
-    [NSApp activateIgnoringOtherApps:YES]; [self.onboard orderFrontRegardless];
-    if (@available(macOS 11.0, *)) CGRequestScreenCaptureAccess();
-    [self refreshOnboardingState];    // snaps the box back to real state until actually granted
+    [self applyShortcut:NO];               // re-attempt: succeeds the moment AX is granted
+    BOOL ok = self.keyTap.isActive;
+    self.obAxCb.state = ok ? NSControlStateValueOn : NSControlStateValueOff;
+    self.obAxCb.enabled = !ok;             // working -> checked & locked
+    self.obStart.enabled = ok;             // Start only when the shortcut actually works
 }
 - (void)obToggleAccessibility:(NSButton*)sender {
     [NSApp activateIgnoringOtherApps:YES]; [self.onboard orderFrontRegardless];
-    AXTrusted(YES);
+    AXTrusted(YES);   // prompt + add to the Accessibility list
+    // Deep-link to the Accessibility pane so the user lands in the right place.
+    [[NSWorkspace sharedWorkspace] openURL:[NSURL URLWithString:
+        @"x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"]];
     [self refreshOnboardingState];
+}
+// Relaunch the app so it re-reads fresh TCC state (Accessibility grant needs a restart).
+- (void)relaunchApp {
+    NSString *p = [[NSBundle mainBundle] bundlePath];
+    NSTask *t = [[NSTask alloc] init];
+    t.executableURL = [NSURL fileURLWithPath:@"/bin/sh"];
+    t.arguments = @[@"-c", [NSString stringWithFormat:@"sleep 0.4; open \"%@\"", p]];
+    [t launch];
+    [NSApp terminate:nil];
 }
 - (void)obIndex:(NSInteger)i code:(UInt32*)code mods:(UInt32*)mods {
     switch (i) { case 1:*code=kVK_F2;*mods=0;break; case 2:*code=kVK_ANSI_2;*mods=cmdKey|shiftKey;break;
@@ -735,25 +736,16 @@ typedef NS_ENUM(NSInteger, AnnotTool) { AnnotRect=0, AnnotArrow, AnnotText, Anno
     self.obHint.stringValue = t;
 }
 - (void)finishOnboarding:(NSButton *)sender {
-    if (!(ScreenGranted() && AXGranted())) { [self refreshOnboardingState]; return; }  // guard
+    if (!self.keyTap.isActive) { [self refreshOnboardingState]; return; }  // guard (Start is gated on this anyway)
     UInt32 code,mods; [self obIndex:self.obPop.indexOfSelectedItem code:&code mods:&mods];
     [[NSUserDefaults standardUserDefaults] setInteger:code forKey:kHKCodeKey];
     [[NSUserDefaults standardUserDefaults] setInteger:mods forKey:kHKModKey];
     if (self.obLogin.state==NSControlStateValueOn) [self setLogin:YES];
     [[NSUserDefaults standardUserDefaults] setBool:YES forKey:kOnboardedKey];
     [[NSNotificationCenter defaultCenter] removeObserver:self name:NSApplicationDidBecomeActiveNotification object:nil];
-
     [self applyShortcut:NO];
     [self rebuildMenu];
     [self.onboard close]; self.onboard=nil;
-
-    if (!self.keyTap.isActive) {
-        NSAlert *a = [[NSAlert alloc] init];
-        a.messageText = @"Quit & reopen to finish";
-        a.informativeText = @"Permissions are granted. Quit and reopen AgentShot to activate the global shortcut.";
-        [a addButtonWithTitle:@"Quit Now"]; [a addButtonWithTitle:@"Later"];
-        if ([a runModal] == NSAlertFirstButtonReturn) [NSApp terminate:nil];
-    }
 }
 @end
 
@@ -763,7 +755,7 @@ int main(int argc, const char *argv[]) {
         if (argc >= 3 && strcmp(argv[1], "--selftest") == 0) {
             ShotInfo info; NSData *d = ProcessImage([NSURL fileURLWithPath:[NSString stringWithUTF8String:argv[2]]], &info);
             if (!d || !info.ok) { fprintf(stderr,"selftest: failed\n"); return 1; }
-            PutOnPasteboard(d,@"public.jpeg");
+            if (!getenv("CI")) PutOnPasteboard(d,@"public.jpeg");   // skip pasteboard in headless CI
             NSInteger st=info.srcW*info.srcH/750, ot=info.outW*info.outH/750;
             printf("src %ldx%ld %ldKB ~%ld tok\nout %ldx%ld %ldKB ~%ld tok q%.2f\nsaved %ld%% ; <1000KB: %s\n",
                 (long)info.srcW,(long)info.srcH,(long)info.srcBytes/1024,(long)st,
