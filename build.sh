@@ -17,11 +17,11 @@ mkdir -p "$DIST"
 if [[ "${USE_SWIFT:-0}" == "1" ]]; then
     echo "==> compiling (swiftc -O)"
     swiftc -O -o "$DIST/$APP_NAME" "Sources/AgentShot/main.swift" \
-        -framework Cocoa -framework ImageIO -framework Carbon -framework UniformTypeIdentifiers
+        -framework Cocoa -framework ImageIO -framework Carbon -framework UniformTypeIdentifiers -framework ServiceManagement
 else
     echo "==> compiling (clang -fobjc-arc -O2)"
     clang -fobjc-arc -O2 -o "$DIST/$APP_NAME" "Sources/AgentShot/AgentShot.m" \
-        -framework Cocoa -framework ImageIO -framework Carbon -framework UniformTypeIdentifiers
+        -framework Cocoa -framework ImageIO -framework Carbon -framework UniformTypeIdentifiers -framework ServiceManagement
 fi
 
 echo "==> assembling $APP"
