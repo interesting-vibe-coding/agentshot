@@ -655,29 +655,49 @@ typedef NS_ENUM(NSInteger, AnnotTool) { AnnotRect=0, AnnotArrow, AnnotText, Anno
     login.frame=NSMakeRect(26,50,420,22); login.state=NSControlStateValueOn; [c addSubview:login];
 
     NSButton *screenCb=[NSButton checkboxWithTitle:@"Allow Screen Recording" target:self action:@selector(obRequestScreen:)];
-    screenCb.frame=NSMakeRect(26,98,420,22); screenCb.state=NSControlStateValueOn; [c addSubview:screenCb];
-    NSButton *axCb=[NSButton checkboxWithTitle:@"Allow Accessibility" target:self action:@selector(obRequestAccessibility:)];
-    axCb.frame=NSMakeRect(26,74,420,22); axCb.state=NSControlStateValueOn; [c addSubview:axCb];
+    screenCb.frame=NSMakeRect(26,98,420,22); screenCb.state=NSControlStateValueOff; [c addSubview:screenCb];
+    NSButton *axCb=[NSButton checkboxWithTitle:@"Allow Accessibility (required for global shortcut)" target:self action:@selector(obRequestAccessibility:)];
+    axCb.frame=NSMakeRect(26,74,420,22); axCb.state=NSControlStateValueOff; [c addSubview:axCb];
 
-    NSTextField *hint=[NSTextField labelWithString:@"After granting permissions, quit and reopen AgentShot."];
+    NSTextField *hint=[NSTextField labelWithString:@"Grant both permissions, then click Start."];
     hint.frame=NSMakeRect(26,30,420,16); hint.font=[NSFont systemFontOfSize:10];
     hint.textColor=[NSColor secondaryLabelColor]; [c addSubview:hint];
 
     NSButton *start=[NSButton buttonWithTitle:@"Start" target:self action:@selector(finishOnboarding:)];
-    start.frame=NSMakeRect(380,20,80,30); start.keyEquivalent=@"\r"; start.bezelStyle=NSBezelStyleRounded;
+    start.frame=NSMakeRect(380,20,80,30); start.keyEquivalent=@""; start.bezelStyle=NSBezelStyleRounded;
+    start.enabled=NO;  // enabled only after both permissions are granted
     [c addSubview:start];
 
     objc_setAssociatedObject(start,"pop",pop,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     objc_setAssociatedObject(start,"login",login,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(start,"screenCb",screenCb,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(start,"axCb",axCb,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(screenCb,"start",start,OBJC_ASSOCIATION_ASSIGN);
+    objc_setAssociatedObject(axCb,"start",start,OBJC_ASSOCIATION_ASSIGN);
     self.onboard=w; [w center]; [NSApp activateIgnoringOtherApps:YES]; [w makeKeyAndOrderFront:nil];
 }
 // map popup index -> (code,mods)
+- (void)obUpdateStartButton:(NSButton*)sender {
+    // Enable Start only after both checkboxes are checked.
+    // We find the Start button via the reverse association on the checkbox.
+    NSButton *start = objc_getAssociatedObject(sender, "start");
+    if (!start) return;
+    NSButton *screenCb = objc_getAssociatedObject(start, "screenCb");
+    NSButton *axCb     = objc_getAssociatedObject(start, "axCb");
+    start.enabled = (screenCb.state == NSControlStateValueOn && axCb.state == NSControlStateValueOn);
+}
 - (void)obRequestScreen:(NSButton*)sender {
-    if (@available(macOS 11.0, *)) CGRequestScreenCaptureAccess();
+    if (sender.state == NSControlStateValueOn) {
+        if (@available(macOS 11.0, *)) CGRequestScreenCaptureAccess();
+    }
+    [self obUpdateStartButton:sender];
 }
 - (void)obRequestAccessibility:(NSButton*)sender {
-    NSDictionary *opts=@{(__bridge id)kAXTrustedCheckOptionPrompt:@YES};
-    AXIsProcessTrustedWithOptions((__bridge CFDictionaryRef)opts);
+    if (sender.state == NSControlStateValueOn) {
+        NSDictionary *opts=@{(__bridge id)kAXTrustedCheckOptionPrompt:@YES};
+        AXIsProcessTrustedWithOptions((__bridge CFDictionaryRef)opts);
+    }
+    [self obUpdateStartButton:sender];
 }
 - (void)obIndex:(NSInteger)i code:(UInt32*)code mods:(UInt32*)mods {
     switch (i) { case 1:*code=kVK_F2;*mods=0;break; case 2:*code=kVK_ANSI_2;*mods=cmdKey|shiftKey;break;
@@ -701,8 +721,6 @@ typedef NS_ENUM(NSInteger, AnnotTool) { AnnotRect=0, AnnotArrow, AnnotText, Anno
     if (login.state==NSControlStateValueOn) [self setLogin:YES];
     [[NSUserDefaults standardUserDefaults] setBool:YES forKey:kOnboardedKey];
 
-    AXTrusted(YES);                                  // prompt Accessibility (for the key tap)
-    if (@available(macOS 11.0,*)) CGRequestScreenCaptureAccess();
     [self applyShortcut:NO];
     [self rebuildMenu];
     [self.onboard close]; self.onboard=nil;
