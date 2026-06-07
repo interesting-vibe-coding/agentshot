@@ -1,19 +1,28 @@
 #!/usr/bin/env bash
-# Build AgentShot.app — a menubar-only macOS app, zero third-party deps.
-# Single-file Swift, compiled directly with swiftc (no SwiftPM needed).
+# Build AgentShot.app — menubar-only macOS app, zero third-party deps.
+#
+# Primary build uses clang + Objective-C (Sources/AgentShot/AgentShot.m), which
+# compiles cleanly even when this machine's Swift toolchain is mismatched.
+# A functionally identical Swift version lives at Sources/AgentShot/main.swift;
+# build it instead by setting USE_SWIFT=1 (requires a healthy swiftc/SDK).
 set -euo pipefail
 cd "$(dirname "$0")"
 
 APP_NAME="AgentShot"
 BUNDLE_ID="dev.doabit.agentshot"
-SRC="Sources/AgentShot/main.swift"
 DIST="dist"
 APP="$DIST/$APP_NAME.app"
-
-echo "==> compiling (swiftc -O)"
 mkdir -p "$DIST"
-swiftc -O -o "$DIST/$APP_NAME" "$SRC" \
-    -framework Cocoa -framework ImageIO -framework Carbon -framework UniformTypeIdentifiers
+
+if [[ "${USE_SWIFT:-0}" == "1" ]]; then
+    echo "==> compiling (swiftc -O)"
+    swiftc -O -o "$DIST/$APP_NAME" "Sources/AgentShot/main.swift" \
+        -framework Cocoa -framework ImageIO -framework Carbon -framework UniformTypeIdentifiers
+else
+    echo "==> compiling (clang -fobjc-arc -O2)"
+    clang -fobjc-arc -O2 -o "$DIST/$APP_NAME" "Sources/AgentShot/AgentShot.m" \
+        -framework Cocoa -framework ImageIO -framework Carbon -framework UniformTypeIdentifiers
+fi
 
 echo "==> assembling $APP"
 rm -rf "$APP"
@@ -40,9 +49,9 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
-# Ad-hoc codesign so the global hotkey + screencapture launch work cleanly.
 echo "==> ad-hoc codesign"
 codesign --force --deep --sign - "$APP" 2>/dev/null || echo "   (codesign skipped)"
 
 echo "==> done: $APP"
-echo "    open $APP   # launch (menubar icon appears top-right)"
+echo "    open $APP                              # launch (menubar icon, top-right)"
+echo "    $APP/Contents/MacOS/$APP_NAME --selftest IMG.png   # verify compression pipeline"

@@ -94,41 +94,42 @@ AgentShot 同时拧两个杠杆：
 ## 安装 / 构建
 
 ```bash
-./build.sh          # 编译 + 组装 dist/AgentShot.app
+./build.sh          # clang 编译 ObjC 版 + 组装 dist/AgentShot.app
 open dist/AgentShot.app
+
+# 验证压缩管线（不弹窗，直接对一张图跑全流程并写入剪贴板）
+./dist/AgentShot.app/Contents/MacOS/AgentShot --selftest 某张截图.png
 ```
 
 首次运行 macOS 会请求**屏幕录制**权限（截图需要）；按提示在 系统设置 → 隐私与安全性 → 屏幕录制 里勾选 AgentShot。
 
-> 需要 Xcode Command Line Tools，且编译器与 SDK 版本匹配。若 `swiftc` 报
-> `this SDK is not supported by the compiler`，运行 `softwareupdate --list`
-> 安装最新的 Command Line Tools 即可。
+> **两份等价实现**：主构建用 **Objective-C**（`Sources/AgentShot/AgentShot.m`，clang 编译，依赖少且不受 Swift 工具链版本问题影响）；另有功能等价的 **Swift** 版 `Sources/AgentShot/main.swift`，`USE_SWIFT=1 ./build.sh` 可改用它（需 swiftc 与 SDK 版本匹配；若报 `this SDK is not supported by the compiler`，`softwareupdate` 更新 Command Line Tools 即可）。
 
 ## 用法
 
 - 启动后菜单栏出现 📷 图标，**无 Dock 图标**（`LSUIElement`，后台常驻）。
 - 默认快捷键 **⌘⇧2** → 框选区域 → 自动压缩 → 已在剪贴板，直接 ⌘V 粘给 agent。
-- 菜单栏图标会闪一下结果，如 `✓ 171KB · 省73% token`。
+- 菜单栏图标会闪一下结果，如 `✓ 176KB · 省73% 像素`。
 - 按 Esc 取消框选。
+
+> **关于剪贴板与「<1000KB」**：工具只写入一个 **JPEG 表示**（实测一张 3024×1964 截图 → 176KB，<1000KB）。但 macOS 会按需为图片**额外合成一个未压缩的 TIFF 表示**（同样是降采样后的 1568px 像素，只是字节大）。关键点：**所有表示的像素尺寸都被压到 ≤1568px，所以 token/费用一定是降下来的**（token 只按像素算，与字节无关），无论目标 app 读取哪个表示。字节层面，读 JPEG 的 app 拿到 <1000KB；个别偏好原始 TIFF 的 app 会拿到较大字节，但像素/ token 不变。
 
 ## 配置
 
-改 `Sources/AgentShot/main.swift` 里的 `Config`：
+改 `Sources/AgentShot/AgentShot.m` 顶部的常量（Swift 版同名字段在 `main.swift` 的 `Config`）：
 
-```swift
-enum Config {
-    static let maxLongEdge = 1568        // 长边上限（Claude 甜点；Opus 4.7+ 可设 2576）
-    static let startQuality: CGFloat = 0.82
-    static let byteLimit = 1000 * 1024   // 硬上限 < 1000KB
-}
+```objc
+static const NSInteger kMaxLongEdge = 1568;        // 长边上限（Claude 甜点；Opus 4.7+ 可设 2560）
+static const CGFloat   kStartQ      = 0.82;        // JPEG 起始质量
+static const NSInteger kByteLimit   = 1000 * 1024; // 硬上限 < 1000KB
 ```
 
-快捷键改 `AppDelegate` 里 `kVK_ANSI_2` / `cmdKey | shiftKey`。
+快捷键改 `applicationDidFinishLaunching` 里的 `kVK_ANSI_2` / `cmdKey | shiftKey`。
 
 ## 技术栈
 
-- Swift（单文件 `main.swift`）
-- ImageIO — 降采样 + JPEG 编码
+- **Objective-C**（单文件 `AgentShot.m`，clang 编译）+ 功能等价的 **Swift** 版 `main.swift`
+- ImageIO — 降采样（`CGImageSourceCreateThumbnailAtIndex`）+ JPEG 编码
 - Carbon `RegisterEventHotKey` — 全局快捷键（无需辅助功能权限）
 - AppKit `NSStatusItem` / `NSPasteboard` — 菜单栏 + 剪贴板
 - 系统 `/usr/sbin/screencapture -i` — 复用 macOS 原生框选交互
