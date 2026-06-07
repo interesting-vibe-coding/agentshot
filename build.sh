@@ -49,8 +49,21 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
-echo "==> ad-hoc codesign"
-codesign --force --deep --sign - "$APP" 2>/dev/null || echo "   (codesign skipped)"
+# Sign with a STABLE identity when available, else fall back to ad-hoc.
+#
+# Ad-hoc (`codesign -s -`) gives a new CDHash every build, and macOS TCC binds
+# the Accessibility grant to that CDHash — so every rebuild silently loses the
+# permission. A stable self-signed identity makes TCC match on the certificate
+# instead, so the grant survives rebuilds. Create it once: ./tools/setup-dev-cert.sh
+# CI has no such identity and just uses ad-hoc (end users grant once anyway).
+DEV_ID="AgentShot Dev (local)"
+if security find-identity -v -p codesigning 2>/dev/null | grep -q "$DEV_ID"; then
+    echo "==> codesign (stable dev identity: $DEV_ID)"
+    codesign --force --deep --sign "$DEV_ID" "$APP" || echo "   (codesign failed)"
+else
+    echo "==> ad-hoc codesign (no dev identity — run ./tools/setup-dev-cert.sh for stable grants)"
+    codesign --force --deep --sign - "$APP" 2>/dev/null || echo "   (codesign skipped)"
+fi
 
 # Strip quarantine so Gatekeeper doesn't block it on first open.
 # Do NOT re-sign after stripping — extra signing invalidates TCC identity

@@ -648,7 +648,10 @@ typedef NS_ENUM(NSInteger, AnnotTool) { AnnotRect=0, AnnotArrow, AnnotText, Anno
     NSWindow *w = [[NSWindow alloc] initWithContentRect:NSMakeRect(0,0,480,360)
         styleMask:(NSWindowStyleMaskTitled|NSWindowStyleMaskClosable) backing:NSBackingStoreBuffered defer:NO];
     w.title=@"Welcome to AgentShot"; NSView *c=w.contentView;
-    w.level = NSFloatingWindowLevel;   // float above other apps' windows on relaunch
+    // Normal level — NOT floating. A floating window sits ABOVE the system's
+    // Accessibility permission dialog and hides it. We foreground it instead via
+    // activateIgnoringOtherApps + orderFrontRegardless (below), which brings it to
+    // front without covering system dialogs.
 
     NSTextField *h=[NSTextField labelWithString:@"📸 AgentShot"];
     h.font=[NSFont boldSystemFontOfSize:22]; h.frame=NSMakeRect(28,304,420,32); [c addSubview:h];
