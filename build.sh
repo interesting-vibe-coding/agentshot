@@ -52,6 +52,11 @@ PLIST
 echo "==> ad-hoc codesign"
 codesign --force --deep --sign - "$APP" 2>/dev/null || echo "   (codesign skipped)"
 
+# Strip quarantine so Gatekeeper doesn't block it on first open.
+# Do NOT re-sign after stripping — extra signing invalidates TCC identity
+# and causes macOS to repeatedly ask for Accessibility/Screen Recording.
+xattr -cr "$APP" 2>/dev/null || true
+
 echo "==> done: $APP"
 echo "    open $APP                              # launch (menubar icon, top-right)"
 echo "    $APP/Contents/MacOS/$APP_NAME --selftest IMG.png   # verify compression pipeline"
