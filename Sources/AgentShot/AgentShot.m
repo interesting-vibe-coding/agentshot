@@ -115,6 +115,7 @@ static void PutOnPasteboard(NSData *data, NSString *type) {
 }
 
 // MARK: - KeyTap (CGEventTap; consumes the key -> overrides other apps)
+@class AppDelegate;
 @interface KeyTap : NSObject
 @property (assign) CGKeyCode code;
 @property (assign) CGEventFlags flags;
@@ -136,6 +137,13 @@ static CGEventRef TapCB(CGEventTapProxy proxy, CGEventType type, CGEventRef e, v
     }
     if (type == kCGEventKeyDown) {
         CGKeyCode kc = (CGKeyCode)CGEventGetIntegerValueField(e, kCGKeyboardEventKeycode);
+        // F3 (keyCode 99): pin clipboard image
+        if (kc == 99) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [[NSApp delegate] performSelector:@selector(pinClipboard)];
+            });
+            return NULL;
+        }
         CGEventFlags mask = kCGEventFlagMaskCommand|kCGEventFlagMaskShift|kCGEventFlagMaskAlternate|kCGEventFlagMaskControl;
         if (kc == kt.code && (CGEventGetFlags(e) & mask) == kt.flags) {
             void (^fire)(void) = kt.onFire;
@@ -162,6 +170,138 @@ static CGEventRef TapCB(CGEventTapProxy proxy, CGEventType type, CGEventRef e, v
 }
 @end
 
+// MARK: - PinView (double-click to close, scroll to zoom)
+@interface PinView : NSImageView
+@property (weak) NSPanel *pinPanel;
+@property (weak) NSMutableArray *pinWindows;
+@end
+@implementation PinView
+- (void)mouseDown:(NSEvent *)e {
+    if (e.clickCount == 2) {
+        [self.pinWindows removeObject:self.pinPanel];
+        [self.pinPanel close];
+    }
+}
+- (void)scrollWheel:(NSEvent *)e {
+    CGFloat delta = e.scrollingDeltaY;
+    if (e.hasPreciseScrollingDeltas) delta /= 5.0;
+    NSRect f = self.pinPanel.frame;
+    CGFloat scale = 1.0 + delta * 0.02;
+    CGFloat nw = MAX(80, f.size.width * scale);
+    CGFloat nh = MAX(60, f.size.height * scale);
+    CGFloat dx = nw - f.size.width, dy = nh - f.size.height;
+    f = NSMakeRect(f.origin.x - dx/2, f.origin.y - dy/2, nw, nh);
+    [self.pinPanel setFrame:f display:YES animate:NO];
+}
+@end
+
+// MARK: - Annotation
+typedef NS_ENUM(NSInteger, AnnotTool) { AnnotRect=0, AnnotArrow, AnnotText, AnnotBlur, AnnotPencil };
+
+@interface AnnotShape : NSObject
+@property AnnotTool tool; @property NSPoint start,end; @property NSMutableArray<NSValue*>*points; @property NSString*text;
+@end
+@implementation AnnotShape
+-(instancetype)init{self=[super init];_points=[NSMutableArray array];return self;}
+@end
+
+@interface AnnotView : NSView
+@property (strong) NSImage *baseImage;
+@property (strong) NSMutableArray<AnnotShape*> *shapes;
+@property (strong) AnnotShape *live;
+@property AnnotTool currentTool;
+@end
+@implementation AnnotView
+-(instancetype)initWithFrame:(NSRect)f baseImage:(NSImage*)img{
+    self=[super initWithFrame:f]; _baseImage=img; _shapes=[NSMutableArray array]; _currentTool=AnnotRect; return self;
+}
+-(BOOL)isFlipped{return YES;}
+-(void)drawRect:(NSRect)r{
+    [_baseImage drawInRect:self.bounds];
+    [[NSColor colorWithRed:1 green:0.2 blue:0.2 alpha:1] set];
+    for(AnnotShape*s in _shapes) [self drawShape:s];
+    if(_live) [self drawShape:_live];
+}
+-(void)drawShape:(AnnotShape*)s{
+    NSRect box=NSMakeRect(MIN(s.start.x,s.end.x),MIN(s.start.y,s.end.y),fabs(s.end.x-s.start.x),fabs(s.end.y-s.start.y));
+    switch(s.tool){
+        case AnnotRect:{
+            NSBezierPath*p=[NSBezierPath bezierPathWithRect:box];
+            [[NSColor colorWithRed:1 green:0.2 blue:0.2 alpha:0.15] set];[p fill];
+            [[NSColor colorWithRed:1 green:0.2 blue:0.2 alpha:1] set];[p setLineWidth:2];[p stroke];break;
+        }
+        case AnnotArrow:{
+            NSBezierPath*p=[NSBezierPath bezierPath];[p setLineWidth:2];
+            [p moveToPoint:s.start];[p lineToPoint:s.end];
+            CGFloat dx=s.end.x-s.start.x,dy=s.end.y-s.start.y,len=sqrt(dx*dx+dy*dy);
+            if(len>0){CGFloat ux=dx/len,uy=dy/len,sz=10;
+                NSPoint a1=NSMakePoint(s.end.x+(-ux+uy)*sz,s.end.y+(-uy-ux)*sz);
+                NSPoint a2=NSMakePoint(s.end.x+(-ux-uy)*sz,s.end.y+(-uy+ux)*sz);
+                [p moveToPoint:s.end];[p lineToPoint:a1];[p moveToPoint:s.end];[p lineToPoint:a2];}
+            [[NSColor colorWithRed:1 green:0.2 blue:0.2 alpha:1] set];[p stroke];break;
+        }
+        case AnnotPencil:{
+            if(s.points.count<2)break;
+            NSBezierPath*p=[NSBezierPath bezierPath];[p setLineWidth:2];
+            [p moveToPoint:[s.points[0] pointValue]];
+            for(NSUInteger i=1;i<s.points.count;i++) [p lineToPoint:[s.points[i] pointValue]];
+            [[NSColor colorWithRed:1 green:0.2 blue:0.2 alpha:1] set];[p stroke];break;
+        }
+        case AnnotText:{
+            if(s.text.length){
+                NSDictionary*attrs=@{NSFontAttributeName:[NSFont systemFontOfSize:16],
+                    NSForegroundColorAttributeName:[NSColor colorWithRed:1 green:0.2 blue:0.2 alpha:1]};
+                [s.text drawAtPoint:s.start withAttributes:attrs];}break;
+        }
+        case AnnotBlur:{
+            if(box.size.width<4||box.size.height<4)break;
+            NSBitmapImageRep*rep=[self bitmapImageRepForCachingDisplayInRect:box];
+            [self cacheDisplayInRect:box toBitmapImageRep:rep];
+            NSImage*small=[[NSImage alloc]initWithSize:NSMakeSize(MAX(1,box.size.width/8),MAX(1,box.size.height/8))];
+            [small lockFocus];[rep drawInRect:NSMakeRect(0,0,small.size.width,small.size.height)];[small unlockFocus];
+            [small drawInRect:box];break;
+        }
+    }
+}
+-(void)mouseDown:(NSEvent*)e{
+    NSPoint pt=[self convertPoint:[e locationInWindow] fromView:nil];
+    if(_currentTool==AnnotText){
+        NSTextField*tf=[[NSTextField alloc]initWithFrame:NSMakeRect(pt.x,pt.y,120,24)];
+        tf.placeholderString=@"text"; [self addSubview:tf]; [tf becomeFirstResponder];
+        __weak NSTextField*wtf=tf; __weak AnnotView*wv=self;
+        [[NSNotificationCenter defaultCenter] addObserverForName:NSControlTextDidEndEditingNotification object:tf queue:nil usingBlock:^(NSNotification*n){
+            AnnotShape*s=[AnnotShape new];s.tool=AnnotText;s.start=pt;s.text=wtf.stringValue;
+            [wv.shapes addObject:s];[wtf removeFromSuperview];[wv setNeedsDisplay:YES];
+        }]; return;
+    }
+    _live=[AnnotShape new];_live.tool=_currentTool;_live.start=pt;_live.end=pt;
+}
+-(void)mouseDragged:(NSEvent*)e{
+    NSPoint pt=[self convertPoint:[e locationInWindow] fromView:nil];
+    if(!_live)return;
+    if(_currentTool==AnnotPencil)[_live.points addObject:[NSValue valueWithPoint:pt]];
+    else _live.end=pt;
+    [self setNeedsDisplay:YES];
+}
+-(void)mouseUp:(NSEvent*)e{
+    if(_live){[_shapes addObject:_live];_live=nil;[self setNeedsDisplay:YES];}
+}
+-(NSImage*)flattenedImage{
+    NSImage*out=[[NSImage alloc]initWithSize:_baseImage.size];
+    [out lockFocus];
+    [_baseImage drawInRect:NSMakeRect(0,0,out.size.width,out.size.height)];
+    CGFloat sx=_baseImage.size.width/self.bounds.size.width, sy=_baseImage.size.height/self.bounds.size.height;
+    for(AnnotShape*s in _shapes){
+        AnnotShape*sc=[AnnotShape new];sc.tool=s.tool;
+        sc.start=NSMakePoint(s.start.x*sx,s.start.y*sy);sc.end=NSMakePoint(s.end.x*sx,s.end.y*sy);
+        sc.text=s.text;
+        for(NSValue*v in s.points)[sc.points addObject:[NSValue valueWithPoint:NSMakePoint([v pointValue].x*sx,[v pointValue].y*sy)]];
+        [self drawShape:sc];
+    }
+    [out unlockFocus];return out;
+}
+@end
+
 // MARK: - App delegate
 @interface AppDelegate : NSObject <NSApplicationDelegate>
 @property (strong) NSStatusItem *statusItem;
@@ -174,7 +314,13 @@ static CGEventRef TapCB(CGEventTapProxy proxy, CGEventType type, CGEventRef e, v
 @property (strong) NSData *origData;
 @property (assign) ShotInfo info;
 @property (strong) dispatch_block_t resetWork;
+@property (strong) NSMutableArray *pinWindows;
+@property (strong) AnnotView *annotView;
+@property (strong) NSPanel *annotPanel;
 - (void)capture;
+- (void)pinClipboard;
+- (void)closeMostRecentPin;
+- (void)editAnnotation;
 @end
 
 @implementation AppDelegate
@@ -185,6 +331,7 @@ static CGEventRef TapCB(CGEventTapProxy proxy, CGEventType type, CGEventRef e, v
 }
 
 - (void)applicationDidFinishLaunching:(NSNotification *)note {
+    self.pinWindows = [NSMutableArray array];
     self.statusItem = [[NSStatusBar systemStatusBar] statusItemWithLength:NSVariableStatusItemLength];
     [self setIcon:@"camera.viewfinder"];
     [self rebuildMenu];
@@ -216,6 +363,8 @@ static CGEventRef TapCB(CGEventTapProxy proxy, CGEventType type, CGEventRef e, v
     NSString *sc = ShortcutLabel(CurrentHKCode(), CurrentHKMods());
     [m addItemWithTitle:[NSString stringWithFormat:@"Capture & compress  截图  (%@)", sc]
                  action:@selector(capture) keyEquivalent:@""];
+    [m addItemWithTitle:@"Pin clipboard image  F3" action:@selector(pinClipboard) keyEquivalent:@""];
+    [m addItemWithTitle:@"Pick color" action:@selector(startColorPicker) keyEquivalent:@""];
     [m addItem:[NSMenuItem separatorItem]];
 
     NSMenuItem *scItem = [[NSMenuItem alloc] initWithTitle:@"Shortcut  快捷键" action:nil keyEquivalent:@""];
@@ -284,6 +433,116 @@ static CGEventRef TapCB(CGEventTapProxy proxy, CGEventType type, CGEventRef e, v
 }
 - (void)toggleLogin:(NSMenuItem *)s { [self setLogin:![self loginEnabled]]; [self rebuildMenu]; }
 
+- (void)startColorPicker {
+    if (@available(macOS 10.15, *)) {
+        __weak typeof(self) ws = self;
+        NSColorSampler *sampler = [[NSColorSampler alloc] init];
+        [sampler showSamplerWithSelectionHandler:^(NSColor *color) {
+            if (!color) return;
+            NSColor *c = [color colorUsingColorSpace:[NSColorSpace sRGBColorSpace]];
+            NSString *hex = [NSString stringWithFormat:@"#%02X%02X%02X",
+                (int)round(c.redComponent*255),(int)round(c.greenComponent*255),(int)round(c.blueComponent*255)];
+            NSPasteboard *pb = [NSPasteboard generalPasteboard];
+            [pb clearContents]; [pb setString:hex forType:NSPasteboardTypeString];
+            [ws flash:[NSString stringWithFormat:@"✓ %@", hex]];
+        }];
+    } else {
+        [self flash:@"requires macOS 10.15+"];
+    }
+}
+
+- (void)editAnnotation {
+    if (!self.compData) return;
+    NSImage *base = [[NSImage alloc] initWithData:self.compData];
+    CGFloat maxW=600, maxH=400; NSSize s=base.size;
+    CGFloat r=MIN(MIN(maxW/s.width,maxH/s.height),1.0);
+    NSSize vs=NSMakeSize(round(s.width*r),round(s.height*r));
+    CGFloat tbH=36;
+    NSPanel *p=[[NSPanel alloc] initWithContentRect:NSMakeRect(0,0,vs.width,vs.height+tbH)
+        styleMask:(NSWindowStyleMaskTitled|NSWindowStyleMaskClosable|NSWindowStyleMaskUtilityWindow)
+        backing:NSBackingStoreBuffered defer:NO];
+    p.title=@"Annotate"; p.floatingPanel=YES;
+    AnnotView *av=[[AnnotView alloc] initWithFrame:NSMakeRect(0,tbH,vs.width,vs.height) baseImage:base];
+    [p.contentView addSubview:av];
+    self.annotView=av;
+    NSArray *tools=@[@"Rect",@"Arrow",@"Text",@"Blur",@"Pencil"];
+    CGFloat bw=vs.width/6;
+    for(NSInteger i=0;i<5;i++){
+        NSButton *b=[NSButton buttonWithTitle:tools[i] target:self action:@selector(annotToolChanged:)];
+        b.frame=NSMakeRect(i*bw,4,bw-2,28); b.tag=i; b.bezelStyle=NSBezelStyleRounded;
+        if(i==0) b.state=NSControlStateValueOn;
+        [p.contentView addSubview:b];
+    }
+    NSButton *done=[NSButton buttonWithTitle:@"Done" target:self action:@selector(doneAnnotation)];
+    done.frame=NSMakeRect(5*bw,4,bw-2,28); done.bezelStyle=NSBezelStyleRounded;
+    [p.contentView addSubview:done];
+    self.annotPanel=p; [p center]; [p makeKeyAndOrderFront:nil];
+}
+- (void)annotToolChanged:(NSButton*)btn {
+    self.annotView.currentTool=(AnnotTool)btn.tag;
+}
+- (void)doneAnnotation {
+    NSImage *flat=[self.annotView flattenedImage];
+    // encode to JPEG
+    NSData *tiff=[flat TIFFRepresentation];
+    NSBitmapImageRep *rep=[NSBitmapImageRep imageRepWithData:tiff];
+    CGFloat q=0.82; NSData *jpeg=nil;
+    while(q>=0.34){
+        jpeg=[rep representationUsingType:NSBitmapImageFileTypeJPEG properties:@{NSImageCompressionFactor:@(q)}];
+        if(jpeg.length<=1000*1024) break;
+        q-=0.10;
+    }
+    if(!jpeg) jpeg=[rep representationUsingType:NSBitmapImageFileTypeJPEG properties:@{NSImageCompressionFactor:@(0.34)}];
+    self.compData=jpeg;
+    NSPasteboard *pb=[NSPasteboard generalPasteboard];
+    [pb clearContents]; [pb setData:jpeg forType:@"public.jpeg"];
+    [self.annotPanel close]; self.annotPanel=nil; self.annotView=nil;
+    [self flash:@"✓ annotated"];
+}
+
+// ---- Pin clipboard image ----
+- (void)pinClipboard {
+    NSPasteboard *pb = [NSPasteboard generalPasteboard];
+    NSData *data = nil;
+    for (NSString *type in @[@"public.tiff", @"public.png", @"public.jpeg"]) {
+        data = [pb dataForType:type];
+        if (data) break;
+    }
+    if (!data) { [self flash:@"No image on clipboard"]; return; }
+    NSImage *img = [[NSImage alloc] initWithData:data];
+    if (!img) { [self flash:@"Cannot read clipboard image"]; return; }
+
+    NSSize s = img.size;
+    CGFloat maxW = 600, maxH = 500;
+    CGFloat r = MIN(MIN(maxW/s.width, maxH/s.height), 1.0);
+    NSSize ds = NSMakeSize(round(s.width*r), round(s.height*r));
+
+    NSPanel *p = [[NSPanel alloc] initWithContentRect:NSMakeRect(0,0,ds.width,ds.height)
+        styleMask:NSWindowStyleMaskBorderless
+        backing:NSBackingStoreBuffered defer:NO];
+    p.level = NSFloatingWindowLevel;
+    p.collectionBehavior = NSWindowCollectionBehaviorCanJoinAllSpaces | NSWindowCollectionBehaviorManaged;
+    p.movableByWindowBackground = YES;
+    p.opaque = NO; p.backgroundColor = [NSColor clearColor];
+    p.hasShadow = YES;
+
+    PinView *iv = [[PinView alloc] initWithFrame:NSMakeRect(0,0,ds.width,ds.height)];
+    iv.image = img; iv.imageScaling = NSImageScaleAxesIndependently;
+    iv.wantsLayer = YES; iv.layer.cornerRadius = 4; iv.layer.masksToBounds = YES;
+    iv.pinPanel = p; iv.pinWindows = self.pinWindows;
+    [p.contentView addSubview:iv];
+
+    [self.pinWindows addObject:p];
+    [p center]; [p makeKeyAndOrderFront:nil];
+}
+
+- (void)closeMostRecentPin {
+    if (self.pinWindows.count == 0) return;
+    NSPanel *last = self.pinWindows.lastObject;
+    [self.pinWindows removeLastObject];
+    [last close];
+}
+
 // ---- Capture flow ----
 - (void)capture {
     NSString *tmp = [NSTemporaryDirectory() stringByAppendingPathComponent:
@@ -324,6 +583,9 @@ static CGEventRef TapCB(CGEventTapProxy proxy, CGEventType type, CGEventRef e, v
     NSTextField *lbl=[NSTextField labelWithString:[NSString stringWithFormat:@"%ld×%ld · %ldKB · ~%ld tok",(long)info.outW,(long)info.outH,(long)kb,(long)tok]];
     lbl.frame=NSMakeRect(pad,pad-2,ts.width,barH-6); lbl.alignment=NSTextAlignmentCenter;
     lbl.textColor=[NSColor secondaryLabelColor]; lbl.font=[NSFont systemFontOfSize:11]; [p.contentView addSubview:lbl];
+    NSButton *editBtn=[NSButton buttonWithTitle:@"Edit" target:self action:@selector(editAnnotation)];
+    editBtn.frame=NSMakeRect(pad, pad-2+barH-6+4, 50, 22); editBtn.bezelStyle=NSBezelStyleRounded;
+    [p.contentView addSubview:editBtn];
     self.preview=p; [p center]; [NSApp activateIgnoringOtherApps:YES]; [p makeKeyAndOrderFront:nil];
     __weak typeof(self) ws=self;
     self.keyMon=[NSEvent addLocalMonitorForEventsMatchingMask:NSEventMaskKeyDown handler:^NSEvent *(NSEvent *ev){ return [ws handlePreviewKey:ev]; }];
@@ -337,7 +599,9 @@ static CGEventRef TapCB(CGEventTapProxy proxy, CGEventType type, CGEventRef e, v
             [self closePreview]; return nil;
         case kVK_Return: case kVK_ANSI_KeypadEnter:
             PutOnPasteboard(self.compData,@"public.jpeg"); [self flashSaved]; [self closePreview]; return nil;
-        case kVK_Escape: [self closePreview]; return nil;
+        case kVK_Escape:
+            if (self.preview) { [self closePreview]; return nil; }
+            [self closeMostRecentPin]; return nil;
     }
     return ev;
 }
@@ -388,7 +652,16 @@ static CGEventRef TapCB(CGEventTapProxy proxy, CGEventType type, CGEventRef e, v
     [self obPickShortcut:pop];
 
     NSButton *login=[NSButton checkboxWithTitle:@"Launch AgentShot at login" target:nil action:nil];
-    login.frame=NSMakeRect(26,74,420,22); login.state=NSControlStateValueOn; [c addSubview:login];
+    login.frame=NSMakeRect(26,50,420,22); login.state=NSControlStateValueOn; [c addSubview:login];
+
+    NSButton *screenCb=[NSButton checkboxWithTitle:@"Allow Screen Recording" target:self action:@selector(obRequestScreen:)];
+    screenCb.frame=NSMakeRect(26,98,420,22); screenCb.state=NSControlStateValueOn; [c addSubview:screenCb];
+    NSButton *axCb=[NSButton checkboxWithTitle:@"Allow Accessibility" target:self action:@selector(obRequestAccessibility:)];
+    axCb.frame=NSMakeRect(26,74,420,22); axCb.state=NSControlStateValueOn; [c addSubview:axCb];
+
+    NSTextField *hint=[NSTextField labelWithString:@"After granting permissions, quit and reopen AgentShot."];
+    hint.frame=NSMakeRect(26,30,420,16); hint.font=[NSFont systemFontOfSize:10];
+    hint.textColor=[NSColor secondaryLabelColor]; [c addSubview:hint];
 
     NSButton *start=[NSButton buttonWithTitle:@"Start" target:self action:@selector(finishOnboarding:)];
     start.frame=NSMakeRect(380,20,80,30); start.keyEquivalent=@"\r"; start.bezelStyle=NSBezelStyleRounded;
@@ -399,6 +672,13 @@ static CGEventRef TapCB(CGEventTapProxy proxy, CGEventType type, CGEventRef e, v
     self.onboard=w; [w center]; [NSApp activateIgnoringOtherApps:YES]; [w makeKeyAndOrderFront:nil];
 }
 // map popup index -> (code,mods)
+- (void)obRequestScreen:(NSButton*)sender {
+    if (@available(macOS 11.0, *)) CGRequestScreenCaptureAccess();
+}
+- (void)obRequestAccessibility:(NSButton*)sender {
+    NSDictionary *opts=@{(__bridge id)kAXTrustedCheckOptionPrompt:@YES};
+    AXIsProcessTrustedWithOptions((__bridge CFDictionaryRef)opts);
+}
 - (void)obIndex:(NSInteger)i code:(UInt32*)code mods:(UInt32*)mods {
     switch (i) { case 1:*code=kVK_F2;*mods=0;break; case 2:*code=kVK_ANSI_2;*mods=cmdKey|shiftKey;break;
                  case 3:*code=kVK_ANSI_5;*mods=cmdKey|shiftKey;break; default:*code=kVK_F1;*mods=0; }
@@ -408,7 +688,7 @@ static CGEventRef TapCB(CGEventTapProxy proxy, CGEventType type, CGEventRef e, v
     BOOL fkey = (code==kVK_F1 || code==kVK_F2);
     NSString *t = [NSString stringWithFormat:@"%@ will be captured system-wide — AgentShot intercepts it first, taking priority over other apps (e.g. Snipaste).",
                    ShortcutLabel(code,mods)];
-    if (fkey) t = [t stringByAppendingString:@"\nOn Macs where F-keys control brightness/volume, press fn+the key (or enable “Use F1, F2 as standard function keys”)."];
+    if (fkey) t = [t stringByAppendingString:@"\nOn Macs where F-keys control brightness/volume, press fn+the key (or enable \u201cUse F1, F2 as standard function keys\u201d)."];
     t = [t stringByAppendingString:@"\nNeeds Accessibility permission — Start will ask for it."];
     self.obHint.stringValue = t;
 }
