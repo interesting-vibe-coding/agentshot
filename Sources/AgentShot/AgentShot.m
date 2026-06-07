@@ -62,6 +62,13 @@ static BOOL AXTrusted(BOOL prompt) {
     NSDictionary *o = @{ (__bridge id)kAXTrustedCheckOptionPrompt: @(prompt) };
     return AXIsProcessTrustedWithOptions((__bridge CFDictionaryRef)o);
 }
+// Real, current permission state (drives the onboarding checkboxes).
+static BOOL ScreenGranted(void) {
+    if (@available(macOS 10.15, *)) return CGPreflightScreenCaptureAccess();
+    return YES;
+}
+static BOOL AXGranted(void) { return AXIsProcessTrusted(); }
+
 
 // MARK: - Compression
 typedef struct { NSInteger outW,outH,srcW,srcH,srcBytes; CGFloat quality; BOOL ok; } ShotInfo;
@@ -309,6 +316,11 @@ typedef NS_ENUM(NSInteger, AnnotTool) { AnnotRect=0, AnnotArrow, AnnotText, Anno
 @property (strong) NSPanel *preview;
 @property (strong) NSWindow *onboard;
 @property (strong) NSTextField *obHint;
+@property (strong) NSButton *obScreenCb;
+@property (strong) NSButton *obAxCb;
+@property (strong) NSButton *obStart;
+@property (strong) NSPopUpButton *obPop;
+@property (strong) NSButton *obLogin;
 @property (strong) id keyMon;
 @property (strong) NSData *compData;
 @property (strong) NSData *origData;
@@ -341,7 +353,8 @@ typedef NS_ENUM(NSInteger, AnnotTool) { AnnotRect=0, AnnotArrow, AnnotText, Anno
     self.keyTap.onFire = ^{ [ws capture]; };
     [self applyShortcut:NO];
 
-    if (![[NSUserDefaults standardUserDefaults] boolForKey:kOnboardedKey])
+    // Show onboarding until BOTH permissions are actually granted (self-correcting).
+    if (!(ScreenGranted() && AXGranted()))
         [self showOnboarding];
 }
 
@@ -650,59 +663,49 @@ typedef NS_ENUM(NSInteger, AnnotTool) { AnnotRect=0, AnnotArrow, AnnotText, Anno
     self.obHint.textColor=[NSColor secondaryLabelColor]; [c addSubview:self.obHint];
     [self obPickShortcut:pop];
 
-    NSButton *login=[NSButton checkboxWithTitle:@"Launch AgentShot at login" target:nil action:nil];
-    login.frame=NSMakeRect(26,50,420,22); login.state=NSControlStateValueOn; [c addSubview:login];
+    self.obLogin=[NSButton checkboxWithTitle:@"Launch AgentShot at login" target:nil action:nil];
+    self.obLogin.frame=NSMakeRect(26,50,420,22); self.obLogin.state=NSControlStateValueOn; [c addSubview:self.obLogin];
 
-    NSButton *screenCb=[NSButton checkboxWithTitle:@"Allow Screen Recording" target:self action:@selector(obRequestScreen:)];
-    screenCb.frame=NSMakeRect(26,98,420,22); screenCb.state=NSControlStateValueOff; [c addSubview:screenCb];
-    NSButton *axCb=[NSButton checkboxWithTitle:@"Allow Accessibility (required for global shortcut)" target:self action:@selector(obRequestAccessibility:)];
-    axCb.frame=NSMakeRect(26,74,420,22); axCb.state=NSControlStateValueOff; [c addSubview:axCb];
+    self.obScreenCb=[NSButton checkboxWithTitle:@"Allow Screen Recording" target:self action:@selector(obToggleScreen:)];
+    self.obScreenCb.frame=NSMakeRect(26,98,420,22); [c addSubview:self.obScreenCb];
+    self.obAxCb=[NSButton checkboxWithTitle:@"Allow Accessibility (required for the global shortcut)" target:self action:@selector(obToggleAccessibility:)];
+    self.obAxCb.frame=NSMakeRect(26,74,430,22); [c addSubview:self.obAxCb];
 
-    NSTextField *hint=[NSTextField labelWithString:@"Grant both permissions, then click Start."];
-    hint.frame=NSMakeRect(26,30,420,16); hint.font=[NSFont systemFontOfSize:10];
+    NSTextField *hint=[NSTextField labelWithString:@"Tick each box to grant. After enabling, you may need to quit & reopen AgentShot."];
+    hint.frame=NSMakeRect(26,28,432,16); hint.font=[NSFont systemFontOfSize:10];
     hint.textColor=[NSColor secondaryLabelColor]; [c addSubview:hint];
 
-    NSButton *start=[NSButton buttonWithTitle:@"Start" target:self action:@selector(finishOnboarding:)];
-    start.frame=NSMakeRect(380,20,80,30); start.keyEquivalent=@""; start.bezelStyle=NSBezelStyleRounded;
-    start.enabled=NO;  // enabled only after both permissions are granted
-    [c addSubview:start];
+    self.obStart=[NSButton buttonWithTitle:@"Start" target:self action:@selector(finishOnboarding:)];
+    self.obStart.frame=NSMakeRect(380,18,80,30); self.obStart.bezelStyle=NSBezelStyleRounded; [c addSubview:self.obStart];
+    self.obPop=pop;
 
-    objc_setAssociatedObject(start,"pop",pop,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    objc_setAssociatedObject(start,"login",login,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    objc_setAssociatedObject(start,"screenCb",screenCb,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    objc_setAssociatedObject(start,"axCb",axCb,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    objc_setAssociatedObject(screenCb,"start",start,OBJC_ASSOCIATION_ASSIGN);
-    objc_setAssociatedObject(axCb,"start",start,OBJC_ASSOCIATION_ASSIGN);
-    self.onboard=w; [w center]; [NSApp activateIgnoringOtherApps:YES]; [w makeKeyAndOrderFront:nil];
+    self.onboard=w;
+    [self refreshOnboardingState];
+    // Re-check when the user returns from System Settings (Accessibility can update live).
+    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(refreshOnboardingState)
+                                                 name:NSApplicationDidBecomeActiveNotification object:nil];
+    [w center]; [NSApp activateIgnoringOtherApps:YES]; [w makeKeyAndOrderFront:nil];
 }
 // map popup index -> (code,mods)
-- (void)obUpdateStartButton:(NSButton*)sender {
-    // Enable Start only after both checkboxes are checked.
-    // We find the Start button via the reverse association on the checkbox.
-    NSButton *start = objc_getAssociatedObject(sender, "start");
-    if (!start) return;
-    NSButton *screenCb = objc_getAssociatedObject(start, "screenCb");
-    NSButton *axCb     = objc_getAssociatedObject(start, "axCb");
-    start.enabled = (screenCb.state == NSControlStateValueOn && axCb.state == NSControlStateValueOn);
+// Drive the onboarding UI off REAL permission state (not what the user clicked).
+- (void)refreshOnboardingState {
+    if (!self.onboard) return;
+    BOOL s = ScreenGranted(), a = AXGranted();
+    self.obScreenCb.state = s ? NSControlStateValueOn : NSControlStateValueOff;
+    self.obScreenCb.enabled = !s;     // granted -> checked & locked
+    self.obAxCb.state = a ? NSControlStateValueOn : NSControlStateValueOff;
+    self.obAxCb.enabled = !a;
+    self.obStart.enabled = (s && a);  // only enabled when BOTH are really granted
 }
-- (void)obRequestScreen:(NSButton*)sender {
-    if (sender.state == NSControlStateValueOn) {
-        // Bring our window to front BEFORE triggering the system prompt,
-        // so the permission dialog appears on top of the onboarding window.
-        [NSApp activateIgnoringOtherApps:YES];
-        [self.onboard orderFrontRegardless];
-        if (@available(macOS 11.0, *)) CGRequestScreenCaptureAccess();
-    }
-    [self obUpdateStartButton:sender];
+- (void)obToggleScreen:(NSButton*)sender {
+    [NSApp activateIgnoringOtherApps:YES]; [self.onboard orderFrontRegardless];
+    if (@available(macOS 11.0, *)) CGRequestScreenCaptureAccess();
+    [self refreshOnboardingState];    // snaps the box back to real state until actually granted
 }
-- (void)obRequestAccessibility:(NSButton*)sender {
-    if (sender.state == NSControlStateValueOn) {
-        [NSApp activateIgnoringOtherApps:YES];
-        [self.onboard orderFrontRegardless];
-        NSDictionary *opts=@{(__bridge id)kAXTrustedCheckOptionPrompt:@YES};
-        AXIsProcessTrustedWithOptions((__bridge CFDictionaryRef)opts);
-    }
-    [self obUpdateStartButton:sender];
+- (void)obToggleAccessibility:(NSButton*)sender {
+    [NSApp activateIgnoringOtherApps:YES]; [self.onboard orderFrontRegardless];
+    AXTrusted(YES);
+    [self refreshOnboardingState];
 }
 - (void)obIndex:(NSInteger)i code:(UInt32*)code mods:(UInt32*)mods {
     switch (i) { case 1:*code=kVK_F2;*mods=0;break; case 2:*code=kVK_ANSI_2;*mods=cmdKey|shiftKey;break;
@@ -714,33 +717,27 @@ typedef NS_ENUM(NSInteger, AnnotTool) { AnnotRect=0, AnnotArrow, AnnotText, Anno
     NSString *t = [NSString stringWithFormat:@"%@ will be captured system-wide — AgentShot intercepts it first, taking priority over other apps (e.g. Snipaste).",
                    ShortcutLabel(code,mods)];
     if (fkey) t = [t stringByAppendingString:@"\nOn Macs where F-keys control brightness/volume, press fn+the key (or enable \u201cUse F1, F2 as standard function keys\u201d)."];
-    t = [t stringByAppendingString:@"\nNeeds Accessibility permission — Start will ask for it."];
     self.obHint.stringValue = t;
 }
 - (void)finishOnboarding:(NSButton *)sender {
-    NSPopUpButton *pop=objc_getAssociatedObject(sender,"pop");
-    NSButton *login=objc_getAssociatedObject(sender,"login");
-    UInt32 code,mods; [self obIndex:pop.indexOfSelectedItem code:&code mods:&mods];
+    if (!(ScreenGranted() && AXGranted())) { [self refreshOnboardingState]; return; }  // guard
+    UInt32 code,mods; [self obIndex:self.obPop.indexOfSelectedItem code:&code mods:&mods];
     [[NSUserDefaults standardUserDefaults] setInteger:code forKey:kHKCodeKey];
     [[NSUserDefaults standardUserDefaults] setInteger:mods forKey:kHKModKey];
-    if (login.state==NSControlStateValueOn) [self setLogin:YES];
+    if (self.obLogin.state==NSControlStateValueOn) [self setLogin:YES];
     [[NSUserDefaults standardUserDefaults] setBool:YES forKey:kOnboardedKey];
+    [[NSNotificationCenter defaultCenter] removeObserver:self name:NSApplicationDidBecomeActiveNotification object:nil];
 
     [self applyShortcut:NO];
     [self rebuildMenu];
     [self.onboard close]; self.onboard=nil;
 
     if (!self.keyTap.isActive) {
-        // Tap failed — permissions were just granted but macOS hasn't propagated
-        // them to this process yet. Must quit and reopen.
         NSAlert *a = [[NSAlert alloc] init];
-        a.messageText = @"Almost there — one more step";
-        a.informativeText = @"Permissions were granted. Please quit AgentShot and reopen it — the global shortcut will be active after restart.";
-        a.alertStyle = NSAlertStyleInformational;
-        [a addButtonWithTitle:@"Quit Now"];
-        [a addButtonWithTitle:@"Later"];
-        if ([a runModal] == NSAlertFirstButtonReturn)
-            [NSApp terminate:nil];
+        a.messageText = @"Quit & reopen to finish";
+        a.informativeText = @"Permissions are granted. Quit and reopen AgentShot to activate the global shortcut.";
+        [a addButtonWithTitle:@"Quit Now"]; [a addButtonWithTitle:@"Later"];
+        if ([a runModal] == NSAlertFirstButtonReturn) [NSApp terminate:nil];
     }
 }
 @end
