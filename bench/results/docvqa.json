@@ -1,0 +1,28 @@
+{
+  "benchmark": "DocVQA",
+  "task": "OCR文档问答(ANLS)",
+  "n": 10,
+  "models": {
+    "anthropic/claude-sonnet-4.6": {
+      "anls_orig": 0.8626,
+      "anls_comp": 0.8846,
+      "img_tokens_orig": 15488,
+      "img_tokens_comp": 15488
+    },
+    "openai/gpt-5.5": {
+      "anls_orig": 1.0,
+      "anls_comp": 1.0,
+      "img_tokens_orig": 37929,
+      "img_tokens_comp": 19082
+    }
+  },
+  "errors": 0,
+  "avg_dims_orig": [
+    1432,
+    2081
+  ],
+  "avg_dims_comp": [
+    1032,
+    1519
+  ]
+}

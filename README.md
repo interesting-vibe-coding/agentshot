@@ -48,6 +48,26 @@ AgentShot 同时拧两个杠杆：
 | AgentShot 后 | 1568×1018 | **171 KB** | **~2128** |
 | | | | **省 73%** |
 
+## Benchmark：压缩前后模型理解 & 省钱
+
+「压完会不会让 AI 看不清？」实测三个数据集（各 10 随机样本 seed=42，两模型经 OpenRouter，压缩参数 1568/q82/<1000KB）：
+
+| Bench | 指标 | claude-sonnet-4.6 orig→comp | gpt-5.5 orig→comp |
+|---|---|---|---|
+| DocVQA | ANLS | 0.863 → 0.885 (**+0.022**) | 1.000 → 1.000 |
+| ScreenSpot-Pro | acc | 0.000 → 0.300 (**+0.30**) | N/A¹ |
+| MMStar² | acc | 0.40 → 0.30 | 0.30 → 0.40 |
+
+关键数字：
+
+- **平均准确率变化 ≈ 0**：压缩后没有实质性下降，DocVQA 基本无损，高分辨率截图定位（ScreenSpot）Claude 反而从 0.0→0.3。
+- **平均 token 节省**：gpt-5.5 在 DocVQA 上 token 砍掉 **≈49.7%**（按像素计费的模型）；Claude 计费 token 不随分辨率变化（省的是字节/带宽）。
+- **每 1000 张截图省钱**：gpt-5.5 DocVQA 实测 **≈ $9.42**；一张 4K 截图按 Claude 公式 11059→1844 token（省 83%），每 1000 张理论省 **≈ $27.65**。
+
+> ¹ ScreenSpot · gpt-5.5 因 OpenRouter 额度耗尽未跑完，标 N/A。² MME-RealWorld 不可用，回退 MMStar；图太小无法演示 token 节省，准确率 ±0.1 属 n=10 噪声。
+>
+> 完整方法、单价、费用推算与诚实结论见 **[bench/RESULTS.md](bench/RESULTS.md)**。
+
 ## 安装 / 构建
 
 ```bash

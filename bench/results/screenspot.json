@@ -1,0 +1,34 @@
+{
+  "benchmark": "ScreenSpot-Pro",
+  "task": "高分辨率截图UI定位(point-in-bbox)",
+  "n": 10,
+  "dataset_used": "lmms-lab/ScreenSpot-Pro",
+  "dataset_note": "Voxel51/ScreenSpot-Pro is an imagefolder with only an `image` feature (no instruction/bbox) — unusable for grounding. Used the canonical annotated lmms-lab/ScreenSpot-Pro (image, bbox[x1,y1,x2,y2], instruction, img_size[w,h]).",
+  "status": "PARTIAL — OpenRouter key spend cap ($30) exhausted mid-sweep (limit_remaining=0). Numbers below are from the genuinely-executed runs; openai/gpt-5.5 could not be completed across all conditions before budget ran out.",
+  "models": {
+    "anthropic/claude-sonnet-4.6": {
+      "acc_orig": 0.0,
+      "acc_comp": 0.3,
+      "img_tokens_orig": 960.4,
+      "img_tokens_comp": 959.4,
+      "n_orig": 10,
+      "n_comp": 10
+    },
+    "openai/gpt-5.5": {
+      "acc_orig": 1.0,
+      "acc_comp": null,
+      "img_tokens_orig": 4951.5,
+      "img_tokens_comp": null,
+      "n_orig": 4,
+      "n_comp": 0,
+      "note": "Only 4 original calls returned before key limit; compressed condition never completed. acc/img_tokens for gpt-5.5 are not a full n=10 measurement."
+    }
+  },
+  "avg_dims_orig": [3840, 1080],
+  "avg_dims_comp": [1568, 441],
+  "selected_indices": [14, 3, 35, 31, 28, 17, 13, 69, 11, 54],
+  "errors": [
+    "openai/gpt-5.5: several calls returned empty content under max_tokens=200 (reasoning model consumed budget); fixed by raising max_tokens to 4000.",
+    "Run truncated by OpenRouter 403 'Key limit exceeded (total limit)' — account credit cap reached. Re-run `python3 bench/run_screenspot.py` after topping up credit to obtain the full n=10 sweep for both models."
+  ]
+}

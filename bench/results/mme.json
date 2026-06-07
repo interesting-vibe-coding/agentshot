@@ -1,0 +1,28 @@
+{
+  "benchmark": "MMStar",
+  "task": "高分辨率真实场景选择题",
+  "n": 10,
+  "models": {
+    "anthropic/claude-sonnet-4.6": {
+      "acc_orig": 0.4,
+      "acc_comp": 0.3,
+      "img_tokens_orig": 331.6,
+      "img_tokens_comp": 331.6
+    },
+    "openai/gpt-5.5": {
+      "acc_orig": 0.3,
+      "acc_comp": 0.4,
+      "img_tokens_orig": 289.3,
+      "img_tokens_comp": 289.3
+    }
+  },
+  "avg_dims_orig": [
+    424,
+    452
+  ],
+  "avg_dims_comp": [
+    424,
+    452
+  ],
+  "note": "MME-RealWorld(-Lite) /rows generation failed on HF datasets-server and lmms-lab/MMStar is gated; used Lin-Chen/MMStar (canonical MMStar) as the choice-question fallback."
+}
