@@ -85,6 +85,9 @@ static NSData *EncodeJPEG(CGImageRef img, CGFloat q) {
     BOOL ok = CGImageDestinationFinalize(d); CFRelease(d);
     return ok ? out : nil;
 }
+static const NSInteger kCompressionTarget = 3;  // output must be ≤ srcBytes/3 when src > 300KB
+static const NSInteger kSmallSrcThreshold = 300 * 1024;  // src ≤ 300KB: skip forced compression
+
 static NSData *ProcessImage(NSURL *url, ShotInfo *info) {
     info->ok = NO;
     CGImageSourceRef src = CGImageSourceCreateWithURL((__bridge CFURLRef)url, NULL);
@@ -98,14 +101,20 @@ static NSData *ProcessImage(NSURL *url, ShotInfo *info) {
     NSInteger maxEdge = CurrentMaxEdge();
     NSInteger longEdge = MAX(info->srcW, info->srcH);
 
-    // Fast path: if already within limits (size ≤ cap AND long edge ≤ max), skip re-encoding.
-    // Re-encoding a well-compressed JPEG/PNG can produce LARGER output.
-    if (info->srcBytes <= kByteLimit && longEdge <= maxEdge) {
+    // Fast path: small source (≤300KB) already within size/resolution cap — skip re-encoding.
+    // Re-encoding a well-compressed PNG/JPEG can produce LARGER output.
+    if (info->srcBytes <= kSmallSrcThreshold && info->srcBytes <= kByteLimit && longEdge <= maxEdge) {
         info->outW = info->srcW; info->outH = info->srcH;
         info->quality = 1.0; info->ok = YES;
         CFRelease(src);
         return rawData;
     }
+
+    // For large sources, target ≤ srcBytes/3 (meaningful compression).
+    // For small sources that still need downscaling, just target kByteLimit.
+    NSInteger target = (info->srcBytes > kSmallSrcThreshold)
+                       ? MIN(kByteLimit, info->srcBytes / kCompressionTarget)
+                       : kByteLimit;
 
     NSData *best = nil; ShotInfo bi = *info;
     NSMutableArray<NSNumber*> *edges = [NSMutableArray arrayWithObject:@(maxEdge)];
@@ -117,27 +126,19 @@ static NSData *ProcessImage(NSURL *url, ShotInfo *info) {
         for (NSInteger qi=0; qi<kQn; qi++) {
             NSData *data = EncodeJPEG(img, kQ[qi]);
             if (!data) continue;
-            if ((NSInteger)data.length <= kByteLimit) {
-                // Only use compressed version if it's actually smaller than original
-                if ((NSInteger)data.length < info->srcBytes) {
-                    bi.outW=w; bi.outH=h; bi.quality=kQ[qi]; bi.ok=YES;
-                    CGImageRelease(img); CFRelease(src); *info=bi; return data;
-                } else {
-                    // Compressed result is bigger — prefer raw original
-                    bi.outW=info->srcW; bi.outH=info->srcH; bi.quality=1.0; bi.ok=YES;
-                    CGImageRelease(img); CFRelease(src); *info=bi; return rawData;
-                }
+            if (!best || (NSInteger)data.length < (NSInteger)best.length) {
+                best = data; bi.outW=w; bi.outH=h; bi.quality=kQ[qi]; bi.ok=YES;
             }
-            best = data; bi.outW=w; bi.outH=h; bi.quality=kQ[qi]; bi.ok=YES;
+            if ((NSInteger)data.length <= target) {
+                CGImageRelease(img); CFRelease(src); *info=bi; return data;
+            }
         }
         CGImageRelease(img);
     }
-    // If we got here, even most aggressive compression exceeds kByteLimit.
-    // Return best effort but guard against bloat.
+    // Exhausted all quality/resolution levels. Return best effort, but never larger than original.
     if (best && (NSInteger)best.length < info->srcBytes) {
         CFRelease(src); *info = bi; return best;
     }
-    // All attempts bigger than original — return original
     bi.outW=info->srcW; bi.outH=info->srcH; bi.quality=1.0; bi.ok=YES;
     CFRelease(src); *info = bi; return rawData;
 }
@@ -797,7 +798,15 @@ typedef NS_ENUM(NSInteger, AnnotTool) { AnnotRect=0, AnnotArrow, AnnotText, Anno
     iv.image=thumb; iv.imageScaling=NSImageScaleProportionallyUpOrDown;
     iv.wantsLayer=YES; iv.layer.cornerRadius=6; iv.layer.masksToBounds=YES; [p.contentView addSubview:iv];
     NSInteger kb=(NSInteger)jpeg.length/1024, tok=info.outW*info.outH/750;
-    NSTextField *lbl=[NSTextField labelWithString:[NSString stringWithFormat:@"%ld×%ld · %ldKB · ~%ld tok",(long)info.outW,(long)info.outH,(long)kb,(long)tok]];
+    NSInteger srcKb = info.srcBytes/1024;
+    NSString *sizeStr;
+    if (srcKb > 0 && (NSInteger)jpeg.length < info.srcBytes)
+        sizeStr = [NSString stringWithFormat:@"%ld×%ld · %ldKB→%ldKB · ~%ld tok",
+                   (long)info.outW,(long)info.outH,(long)srcKb,(long)kb,(long)tok];
+    else
+        sizeStr = [NSString stringWithFormat:@"%ld×%ld · %ldKB · ~%ld tok",
+                   (long)info.outW,(long)info.outH,(long)kb,(long)tok];
+    NSTextField *lbl=[NSTextField labelWithString:sizeStr];
     lbl.frame=NSMakeRect(pad,pad-2,ts.width,barH-6); lbl.alignment=NSTextAlignmentCenter;
     lbl.textColor=[NSColor secondaryLabelColor]; lbl.font=[NSFont systemFontOfSize:11]; [p.contentView addSubview:lbl];
     NSButton *editBtn=[NSButton buttonWithTitle:@"Edit" target:self action:@selector(editAnnotation)];
