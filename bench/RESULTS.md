@@ -25,15 +25,16 @@
 |---|---|---|---|---|---|
 | DocVQA (ANLS) | claude-sonnet-4.6 | 0.863 | 0.885 | **+0.022** | 0.0% |
 | DocVQA (ANLS) | gpt-5.5 | 1.000 | 1.000 | **0.000** | **49.7%** |
-| ScreenSpot-Pro (acc) | claude-sonnet-4.6 | 0.000 | 0.300 | **+0.300** | 0.1% |
-| ScreenSpot-Pro (acc) | gpt-5.5 | 1.000 (n=4) | N/A | N/A | N/A |
+| ScreenSpot-Pro (acc) | claude-sonnet-4.6 | 0.000 | 0.400 | +0.400 | ~0% |
+| ScreenSpot-Pro (acc) | gpt-5.5 | 0.900 | 0.400 | **−0.500** | **81%** |
 | MMStar (acc) | claude-sonnet-4.6 | 0.400 | 0.300 | −0.100 | 0.0% |
 | MMStar (acc) | gpt-5.5 | 0.300 | 0.400 | +0.100 | 0.0% |
 
 说明 / 诚实标注：
-- **ScreenSpot-Pro · gpt-5.5 = N/A**：OpenRouter key 的 $30 spend cap 在跑到这里时耗尽（`limit_remaining=0`，硬 403），gpt-5.5 只完成 4 个原图调用、压缩条件一次都没跑，**不构成完整 n=10 测量**，故标 N/A。补足额度后重跑 `python3 bench/run_screenspot.py` 即可补全。
-- **Claude 的 token 节省几乎为 0**：Claude 的图像 token 计费对分辨率不敏感（benchmark 里 orig/comp 上报 token 几乎不变），所以压缩省的是「字节 / 带宽」而非「Claude 计费 token」。真正的 token 节省体现在按像素分块计费的模型（gpt-5.5）和 Claude 的理论公式上（见下「极端例子」）。
-- **MMStar 那两行准确率波动（±0.1）在 n=10 下属于噪声**，且图太小无法演示 token 节省，仅供参考。
+- **ScreenSpot-Pro 是「最坏情况」——像素级 grounding**：gpt-5.5 在原图 3840×1080 上命中率 0.9，压到 1568×441 后掉到 0.4（**降采样确实压坏了小 UI 元素的精确定位**），同时 token 从 4601 砍到 878（省 81%）。这说明「输出精确点击坐标 + 超高分屏」是压缩有真实代价的场景，应使用高保真档或不压；而「读懂截图内容」类任务（DocVQA）则无损。Claude 在该任务原生 grounding 很弱（0/10），0.0→0.4 主要是 n=10 噪声 + 坐标空间变小后更易精确，不宜过度解读。
+- **Claude 的 token 节省几乎为 0**：Claude 的图像 token 计费对分辨率不敏感（两个 bench 实测 orig/comp 上报 token 几乎不变：DocVQA 15488→15488、ScreenSpot 960→959），所以压缩省的是「字节 / 带宽」而非「Claude 计费 token」。真正的 token 节省体现在按发送分辨率计费的模型（gpt-5.5：DocVQA 省 49.7%、ScreenSpot 省 81%）。
+- **MMStar 那两行准确率波动（±0.1）在 n=10 下属于噪声**，且图太小（424px）不触发压缩、无法演示 token 节省，仅供参考。
+- **n=10 为小样本演示**，用于快速说明方向，非严格 benchmark 评测。
 
 ---
 
@@ -46,13 +47,14 @@ OpenRouter 实时单价（prompt，每 token 美元）：
 | anthropic/claude-sonnet-4.6 | 0.000003 | $3.00 |
 | openai/gpt-5.5 | 0.000005 | $5.00 |
 
-**唯一一项跑通且确有 token 节省的真实测量 —— DocVQA · gpt-5.5：**
+**按发送分辨率计费的模型（gpt-5.5）上的真实 token 节省：**
 
-- 每张图 token：orig 3792.9 → comp 1908.2，**省 1884.7 token/张**（约 49.7%）
-- 每张省钱：1884.7 × $0.000005 = **$0.00942 / 张**
-- 外推 **每 1000 张截图省 ≈ $9.42**
+| 任务 | 原图 token/张 | 压缩 token/张 | 省 | 每张省钱($5/Mtok) | 每 1000 张 |
+|---|---|---|---|---|---|
+| DocVQA | 3792.9 | 1908.2 | 49.7% | $0.00942 | **≈ $9.42** |
+| ScreenSpot-Pro | 4600.9 | 878.3 | 81% | $0.01861 | **≈ $18.61** |
 
-其余真实测量（Claude DocVQA、两模型 MMStar）token 几乎不变，按上述单价省钱 ≈ $0；ScreenSpot · gpt-5.5 因额度耗尽无法给出。
+> Claude 侧两个 bench 的 token orig≈comp，按上述单价省钱 ≈ $0（服务端已替你降采样）。MMStar 图太小，省钱 ≈ $0。
 
 ### 极端例子：一张 4K 截图（仅适用于「按发送分辨率计费」的模型）
 
@@ -64,7 +66,7 @@ OpenRouter 实时单价（prompt，每 token 美元）：
 | AgentShot 后 | 1568×882 | 1568·882/750 = **1844** |
 | **省** | | **9215 token (83%)** |
 
-> ⚠️ 这个 83% **不适用于 Claude**。本 benchmark 实测显示 Claude 上报的 `img_tokens` 在 orig/comp 间几乎不变（DocVQA: 15488→15488，ScreenSpot: 960.4→959.4）——因为 Anthropic 会先把 >1568px 的图自动降采样再计费，4K 截图在 Claude 上本就按 ~1844 token 计，而非 11059。所以**对 Claude 而言这张图的 token 费用节省 ≈ 0**，省的是上传字节/带宽与请求大小限制。该 83% 仅对「按你发送的分辨率计费」的模型（如本测中 gpt-5.5 在 DocVQA 实测省 49.7%）成立。
+> ⚠️ 这个 83% **不适用于 Claude**。本 benchmark 实测显示 Claude 上报的 `img_tokens` 在 orig/comp 间几乎不变（DocVQA: 15488→15488，ScreenSpot: 960.4→959.4）——因为 Anthropic 会先把 >1568px 的图自动降采样再计费，4K 截图在 Claude 上本就按 ~1844 token 计，而非 11059。所以**对 Claude 而言这张图的 token 费用节省 ≈ 0**，省的是上传字节/带宽与请求大小限制。该 83% 对「按你发送的分辨率计费」的模型（如 gpt-5.5）成立，并与 ScreenSpot 实测 81% 吻合。
 
 ---
 
@@ -76,6 +78,8 @@ OpenRouter 实时单价（prompt，每 token 美元）：
 - **按发送分辨率计费的模型（GPT 等）**：真实节省。gpt-5.5 在 DocVQA token 砍约一半（每 1000 张省 ≈ $9.42）。
 - **Claude**：实测计费 token 不随分辨率变化（Anthropic 服务端先降采样再计费），token 费用节省 ≈ 0；本工具的价值在于减少上传字节/带宽、绕过 32MB 请求与单请求图片数限制，以及让你**自己掌控**压缩质量而非交给服务端黑盒。
 
-**3. 本次局限（不回避）：** ScreenSpot-Pro 因 OpenRouter 额度中途耗尽仅部分跑通、且 grounding 在 n=10 下噪声大，不作结论；MMStar 图太小不触发压缩、准确率 ±0.1 属噪声，亦不作结论。需补足额度并换用真正高分辨率的截图 QA 数据集重跑，才能给出 ScreenSpot/真实场景的可信数字。
+**3. 但像素级 grounding + 超高分屏是例外（不回避）：** ScreenSpot-Pro 上 gpt-5.5 把 3840×1080 压到 1568×441 后，UI 点击命中率从 0.9 掉到 0.4 —— 降采样确实损害小元素的精确定位（代价换来 81% token 节省）。这类「输出精确坐标」的任务应使用高保真档（2560px）或不压；而「读懂截图内容」（DocVQA）无此问题。
 
-一句话：**压缩几乎不损识别；token/费用节省对「按像素计费」的模型确实可观，对 Claude 则主要是带宽与可控性而非 token 费用。**
+**4. 本次局限：** n=10 为小样本演示而非严格评测；Claude 原生 grounding 很弱（ScreenSpot 原图 0/10），其 0.0→0.4 含较大噪声；MME-RealWorld 不可用、回退的 MMStar 图太小不触发压缩，不作结论。
+
+一句话：**读懂截图几乎不损识别且对按像素计费的模型省 50%~81% token；像素级精确定位在高分屏上压缩有代价（用高保真档）；Claude 链路省的是带宽与可控性而非 token 费用，但 Kiro/Codex 等不预处理的链路是实打实省 token。**
