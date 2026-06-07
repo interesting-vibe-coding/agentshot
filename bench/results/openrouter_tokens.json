@@ -1,0 +1,27 @@
+{
+  "source": "/tmp/fullscreen_test.png",
+  "src_bytes": 775289,
+  "comp_bytes": 178182,
+  "src_dim": [
+    3024,
+    1964
+  ],
+  "comp_dim": [
+    1568,
+    1018
+  ],
+  "models": {
+    "anthropic/claude-sonnet-4.6": {
+      "orig": 1588,
+      "comp": 1588,
+      "saved": 0,
+      "pct": 0
+    },
+    "openai/gpt-5.5": {
+      "orig": 7083,
+      "comp": 1896,
+      "saved": 5187,
+      "pct": 73
+    }
+  }
+}
