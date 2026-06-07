@@ -21,7 +21,8 @@ Screenshots pasted into AI agents are needlessly huge. A Retina grab is millions
 
 <p align="center"><img src="assets/before-after.png" width="92%"></p>
 
-- ⚡ **One hotkey** (`⌘⇧2`) → native region select → compressed → clipboard. Paste anywhere.
+- ⚡ **One hotkey** (`F1`, configurable) → native region select → preview → clipboard. Paste anywhere.
+- 🎛️ **You stay in control**: in the preview, `C` copies the compressed shot, `⇧C` copies the original.
 - 🎯 **Smart cap**: long edge ≤ 1568px (Claude's sweet spot) + JPEG q82, hard-capped **< 1000KB**.
 - 🪶 **Featherweight**: menubar-only, no Dock icon, **zero third-party dependencies**, pure native macOS.
 - 🔬 **Benchmarked**: compression doesn't hurt how models read screenshots — we measured it.
@@ -71,9 +72,13 @@ First launch prompts for **Screen Recording** permission (needed to capture). A 
 
 ## Usage
 
+- On first launch a quick welcome lets you enable **Launch at login** and see your shortcut.
 - A 📸 icon appears in the menubar (no Dock icon — it's a background `LSUIElement`).
-- Press **`⌘⇧2`** → drag to select → it's compressed and on your clipboard. Just `⌘V` into your agent.
-- The icon flashes the result, e.g. `✓ 176KB · -73% pixels`. `Esc` cancels.
+- Press **`F1`** (default — change it in 📸 → **Shortcut**) → drag to select a region.
+- A preview pops up: **`C`** or **`↩`** copies the compressed image · **`⇧C`** copies the original (uncompressed) · **`Esc`** cancels.
+- Then just `⌘V` into your agent.
+
+> Many Macs map `F1` to screen-brightness, so you may need `fn`+`F1` — or switch the shortcut to `⌘⇧2` from the menubar.
 
 ## How it works
 
@@ -91,11 +96,11 @@ Set everything from the menubar icon — no config files. Under **Quality**, pic
 | **Balanced** (default) | **1568px** | general use — Claude's sweet spot |
 | High fidelity | 2560px | dense tables / code / tiny text |
 
-Every capture is still hard-capped to **< 1000KB** automatically.
+Every capture is still hard-capped to **< 1000KB** automatically. The menubar also has **Shortcut** (F1 / F2 / ⌘⇧2 / ⌘⇧5) and **Launch at login** — all persisted, no config files.
 
 ## Stack
 
-Objective-C single file (`AgentShot.m`, clang) + equivalent Swift (`main.swift`) · ImageIO · Carbon global hotkey (no Accessibility permission) · AppKit menubar & pasteboard · system `screencapture`. Zero third-party dependencies.
+Objective-C single file (`AgentShot.m`, clang) · ImageIO · Carbon global hotkey (no Accessibility permission) · AppKit menubar / preview panel / pasteboard · ServiceManagement (launch-at-login) · system `screencapture`. Zero third-party dependencies.
 
 ## License
 
