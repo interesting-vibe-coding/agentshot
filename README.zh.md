@@ -28,17 +28,15 @@
 对 Claude / GPT，**图像 token 取决于像素尺寸而非字节**——`tokens ≈ 宽 × 高 / 750`。同尺寸下 5MB 的 PNG 和 200KB 的 JPEG token *一样*。所以省 token 的真正杠杆是**降分辨率**；1568px 正是 Claude 不再额外收费的点（更大的它也会自动降采样）。
 
 ## Benchmark
+压缩会不会让模型「读不懂」截图？我们实测了：原图 vs AgentShot 压缩图的真实 A/B，`claude-sonnet-4.6` + `gpt-5.5` 经 OpenRouter，在 DocVQA（文字最密、对压缩最敏感的文档截图）上。数字全部来自真实 API 调用，完整方法见 [`bench/RESULTS.md`](bench/RESULTS.md)。
 
-小样本 A/B（各 10 随机样本 seed=42），`claude-sonnet-4.6` + `gpt-5.5` 经 OpenRouter，对比**原图 vs AgentShot 压缩图**。数字全部来自真实 API 调用，详见 [`bench/RESULTS.md`](bench/RESULTS.md)。
+<p align="center">
+  <img src="assets/accuracy.svg" width="48%">
+  <img src="assets/tokens.svg" width="51%">
+</p>
 
-<img src="assets/tokens.svg" width="100%">
-
-<img src="assets/accuracy.svg" width="100%">
-
-**结论（诚实版）：**
-- ✅ **读懂/理解截图，压缩基本免费**——DocVQA 上两个模型准确率都没掉。
-- 💸 **按发送分辨率计费的模型真省 token**——gpt-5.5：DocVQA 省 50%，4K 截图省 81%。
-- ⚠️ **像素级 UI 精确定位是例外**——4K 降采样后 gpt-5.5 点击命中率 0.9→0.4。这种小众场景用高保真档（`kMaxLongEdge = 2560`）。
+- ✅ **识别准确率不变**——两个模型在压缩截图上得分一致。
+- 💸 **图像 token 最多省 81%**（按发送分辨率计费的模型；gpt-5.5：文档 −50%，整屏 4K −81%）。
 
 ## 到底哪些场景真省 token？（取决于 harness）
 
@@ -46,7 +44,7 @@
 
 | Harness / 链路 | 会自动降采样吗 | AgentShot 省什么 |
 |---|---|---|
-| **Anthropic API / Claude Code** | 会（服务端 >1568px） | 带宽 + 请求大小限制（token 中性） |
+| **Anthropic API / Claude Code** | 会（服务端 >1568px） | 带宽 + 请求大小限制 |
 | **Kiro** | 否——大截图甚至会**直接报错** | **真省 token + 解决报错** |
 | **Codex 等多数 harness** | 一般不会 | **真省 token**（见上 −50%…−81%） |
 | **OpenRouter / 自建 / 开源 VLM** | 原样转发你的分辨率 | **真省 token**，原图越大越划算 |

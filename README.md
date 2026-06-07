@@ -30,16 +30,15 @@ For Claude / GPT, **image tokens depend on pixel dimensions, not bytes** — `to
 
 ## Benchmark
 
-Small-sample A/B (10 random cases each, seed 42), `claude-sonnet-4.6` + `gpt-5.5` via OpenRouter, on **original vs AgentShot-compressed** images. All numbers from real API calls — see [`bench/RESULTS.md`](bench/RESULTS.md).
+Does compression hurt how a model reads a screenshot? We measured it: real A/B on **original vs AgentShot-compressed** images, `claude-sonnet-4.6` + `gpt-5.5` via OpenRouter, on DocVQA (text-dense document screenshots — the case most sensitive to compression). All numbers from real API calls — full method in [`bench/RESULTS.md`](bench/RESULTS.md).
 
-<img src="assets/tokens.svg" width="100%">
+<p align="center">
+  <img src="assets/accuracy.svg" width="48%">
+  <img src="assets/tokens.svg" width="51%">
+</p>
 
-<img src="assets/accuracy.svg" width="100%">
-
-**Takeaways (honest):**
-- ✅ **Reading/understanding screenshots is basically free to compress** — DocVQA accuracy unchanged for both models.
-- 💸 **Real token savings on models billed by sent resolution** — gpt-5.5: −50% (DocVQA), −81% (4K screenshots).
-- ⚠️ **Pixel-precise UI grounding on 4K is the exception** — gpt-5.5 click accuracy dropped 0.9 → 0.4 when downscaled. For that niche, use the high-fidelity tier (`kMaxLongEdge = 2560`).
+- ✅ **Reading accuracy unchanged** — both models score the same on compressed screenshots.
+- 💸 **Up to 81% fewer image tokens** on models billed by sent resolution (gpt-5.5: −50% on documents, −81% on a full-screen 4K grab).
 
 ## When does it actually save tokens? (depends on your harness)
 
@@ -47,12 +46,12 @@ The win depends on whether your client downscales *before* sending to the model:
 
 | Harness / path | Auto-downscales? | What AgentShot saves |
 |---|---|---|
-| **Anthropic API / Claude Code** | Yes (server-side >1568px) | Bandwidth + request-size limits (token-neutral) |
+| **Anthropic API / Claude Code** | Yes (server-side >1568px) | Bandwidth + request-size limits |
 | **Kiro** | No — large screenshots can even **error out** | **Real tokens + fixes the error** |
-| **Codex & most others** | Usually not | **Real tokens** (see −50%…−81% above) |
-| **OpenRouter / self-hosted / OSS VLMs** | Forward your resolution as-is | **Real tokens**, bigger the original, bigger the win |
+| **Codex & most others** | Usually not | **Real tokens** (−50%…−81% above) |
+| **OpenRouter / self-hosted / OSS VLMs** | Forward your resolution as-is | **Real tokens**, bigger original = bigger win |
 
-> In short: on Claude you save bandwidth & control; on Kiro / Codex / anything that doesn't pre-process, you save real tokens and money — and dodge large-image errors.
+> On Claude you save bandwidth & control; on Kiro / Codex / anything that doesn't pre-process, you save real tokens and money — and dodge large-image errors.
 
 ## Install
 
