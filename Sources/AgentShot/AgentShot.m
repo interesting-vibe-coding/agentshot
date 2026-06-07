@@ -688,12 +688,18 @@ typedef NS_ENUM(NSInteger, AnnotTool) { AnnotRect=0, AnnotArrow, AnnotText, Anno
 }
 - (void)obRequestScreen:(NSButton*)sender {
     if (sender.state == NSControlStateValueOn) {
+        // Bring our window to front BEFORE triggering the system prompt,
+        // so the permission dialog appears on top of the onboarding window.
+        [NSApp activateIgnoringOtherApps:YES];
+        [self.onboard orderFrontRegardless];
         if (@available(macOS 11.0, *)) CGRequestScreenCaptureAccess();
     }
     [self obUpdateStartButton:sender];
 }
 - (void)obRequestAccessibility:(NSButton*)sender {
     if (sender.state == NSControlStateValueOn) {
+        [NSApp activateIgnoringOtherApps:YES];
+        [self.onboard orderFrontRegardless];
         NSDictionary *opts=@{(__bridge id)kAXTrustedCheckOptionPrompt:@YES};
         AXIsProcessTrustedWithOptions((__bridge CFDictionaryRef)opts);
     }
