@@ -315,8 +315,8 @@ typedef NS_ENUM(NSInteger, AnnotTool) { AnnotRect=0, AnnotArrow, AnnotText, Anno
 @property (strong) NSButton *obStart;
 @property (strong) NSPopUpButton *obPop;
 @property (strong) NSButton *obLogin;
-@property (assign) BOOL axRequested;
 @property (strong) NSTextField *obPermHint;
+@property (strong) NSTimer *obTimer;
 @property (strong) id keyMon;
 @property (strong) NSData *compData;
 @property (strong) NSData *origData;
@@ -691,6 +691,9 @@ typedef NS_ENUM(NSInteger, AnnotTool) { AnnotRect=0, AnnotArrow, AnnotText, Anno
     // Re-check when the user returns from System Settings.
     [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(refreshOnboardingState)
                                                  name:NSApplicationDidBecomeActiveNotification object:nil];
+    // Poll so the checkbox stays in sync with System Settings without needing focus.
+    self.obTimer = [NSTimer scheduledTimerWithTimeInterval:1.0 target:self
+                     selector:@selector(refreshOnboardingState) userInfo:nil repeats:YES];
     [w center]; [NSApp activateIgnoringOtherApps:YES]; [w makeKeyAndOrderFront:nil]; [w orderFrontRegardless];
     __weak typeof(self) ws=self;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(0.4*NSEC_PER_SEC)),dispatch_get_main_queue(),^{
@@ -698,29 +701,31 @@ typedef NS_ENUM(NSInteger, AnnotTool) { AnnotRect=0, AnnotArrow, AnnotText, Anno
     });
 }
 // map popup index -> (code,mods)
-// Drive the onboarding UI off the GROUND TRUTH: did the event tap actually load?
-// (Permission APIs cache stale values in-process; the live tap does not.)
+// The checkbox MIRRORS the real system setting (AXIsProcessTrusted), polled so it
+// stays in sync the moment the user flips it in System Settings. The shortcut
+// (CGEventTap) may still need a restart to actually start, hence the Restart hint.
 - (void)refreshOnboardingState {
     if (!self.onboard) return;
-    [self applyShortcut:NO];               // re-attempt: succeeds the moment AX is granted
-    BOOL ok = self.keyTap.isActive;
-    // Keep the box checked once the user has requested it (grant needs a restart to
-    // take effect — don't snap it back to unchecked, that looks broken).
-    self.obAxCb.state = (ok || self.axRequested) ? NSControlStateValueOn : NSControlStateValueOff;
-    self.obAxCb.enabled = !ok;             // working -> locked
-    self.obStart.enabled = ok;             // Start only when the shortcut actually works
-    if (ok)                self.obPermHint.stringValue = @"✓ Accessibility granted — the shortcut is active. Click Start.";
-    else if (self.axRequested) self.obPermHint.stringValue = @"Enable AgentShot in System Settings ▸ Privacy ▸ Accessibility, then click Restart.";
-    else                   self.obPermHint.stringValue = @"Tick the box to grant Accessibility (required for the global shortcut).";
+    BOOL trusted = AXIsProcessTrusted();          // system's current grant for us
+    if (trusted && !self.keyTap.isActive) [self applyShortcut:NO];  // try to start the tap now
+    BOOL active = self.keyTap.isActive;           // is the shortcut actually working?
+
+    self.obAxCb.state   = trusted ? NSControlStateValueOn : NSControlStateValueOff;  // sync with system
+    self.obAxCb.enabled = !trusted;               // granted -> locked
+    self.obStart.enabled = active;
+
+    if (active)        self.obPermHint.stringValue = @"✓ Accessibility on — the shortcut is active. Click Start.";
+    else if (trusted)  self.obPermHint.stringValue = @"Granted ✓ — click Restart to activate the shortcut.";
+    else               self.obPermHint.stringValue = @"Tick the box, then enable AgentShot in System Settings ▸ Privacy ▸ Accessibility.";
 }
 - (void)obToggleAccessibility:(NSButton*)sender {
-    self.axRequested = YES;
     [NSApp activateIgnoringOtherApps:YES]; [self.onboard orderFrontRegardless];
-    AXTrusted(YES);                        // Apple's own prompt (has an "Open System Settings" button)
-    [self refreshOnboardingState];
+    AXTrusted(YES);                               // Apple's own prompt (has "Open System Settings")
+    [self refreshOnboardingState];                // snaps to real system state (stays unchecked until granted)
 }
 // Relaunch the app so it re-reads fresh TCC state (Accessibility grant needs a restart).
 - (void)relaunchApp {
+    [self.obTimer invalidate]; self.obTimer=nil;
     NSString *p = [[NSBundle mainBundle] bundlePath];
     NSTask *t = [[NSTask alloc] init];
     t.executableURL = [NSURL fileURLWithPath:@"/bin/sh"];
@@ -748,6 +753,7 @@ typedef NS_ENUM(NSInteger, AnnotTool) { AnnotRect=0, AnnotArrow, AnnotText, Anno
     if (self.obLogin.state==NSControlStateValueOn) [self setLogin:YES];
     [[NSUserDefaults standardUserDefaults] setBool:YES forKey:kOnboardedKey];
     [[NSNotificationCenter defaultCenter] removeObserver:self name:NSApplicationDidBecomeActiveNotification object:nil];
+    [self.obTimer invalidate]; self.obTimer=nil;
     [self applyShortcut:NO];
     [self rebuildMenu];
     [self.onboard close]; self.onboard=nil;
