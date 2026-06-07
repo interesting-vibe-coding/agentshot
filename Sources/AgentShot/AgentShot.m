@@ -315,6 +315,8 @@ typedef NS_ENUM(NSInteger, AnnotTool) { AnnotRect=0, AnnotArrow, AnnotText, Anno
 @property (strong) NSButton *obStart;
 @property (strong) NSPopUpButton *obPop;
 @property (strong) NSButton *obLogin;
+@property (assign) BOOL axRequested;
+@property (strong) NSTextField *obPermHint;
 @property (strong) id keyMon;
 @property (strong) NSData *compData;
 @property (strong) NSData *origData;
@@ -673,9 +675,9 @@ typedef NS_ENUM(NSInteger, AnnotTool) { AnnotRect=0, AnnotArrow, AnnotText, Anno
     self.obAxCb=[NSButton checkboxWithTitle:@"Allow Accessibility (required for the global shortcut)" target:self action:@selector(obToggleAccessibility:)];
     self.obAxCb.frame=NSMakeRect(26,84,430,22); [c addSubview:self.obAxCb];
 
-    NSTextField *hint=[NSTextField wrappingLabelWithString:@"Tick the box, enable AgentShot in System Settings, then click Restart."];
-    hint.frame=NSMakeRect(26,62,432,18); hint.font=[NSFont systemFontOfSize:10];
-    hint.textColor=[NSColor secondaryLabelColor]; [c addSubview:hint];
+    self.obPermHint=[NSTextField wrappingLabelWithString:@""];
+    self.obPermHint.frame=NSMakeRect(26,58,432,22); self.obPermHint.font=[NSFont systemFontOfSize:10];
+    self.obPermHint.textColor=[NSColor secondaryLabelColor]; [c addSubview:self.obPermHint];
 
     NSButton *restart=[NSButton buttonWithTitle:@"Restart" target:self action:@selector(relaunchApp)];
     restart.frame=NSMakeRect(286,18,86,30); restart.bezelStyle=NSBezelStyleRounded; [c addSubview:restart];
@@ -702,16 +704,19 @@ typedef NS_ENUM(NSInteger, AnnotTool) { AnnotRect=0, AnnotArrow, AnnotText, Anno
     if (!self.onboard) return;
     [self applyShortcut:NO];               // re-attempt: succeeds the moment AX is granted
     BOOL ok = self.keyTap.isActive;
-    self.obAxCb.state = ok ? NSControlStateValueOn : NSControlStateValueOff;
-    self.obAxCb.enabled = !ok;             // working -> checked & locked
+    // Keep the box checked once the user has requested it (grant needs a restart to
+    // take effect — don't snap it back to unchecked, that looks broken).
+    self.obAxCb.state = (ok || self.axRequested) ? NSControlStateValueOn : NSControlStateValueOff;
+    self.obAxCb.enabled = !ok;             // working -> locked
     self.obStart.enabled = ok;             // Start only when the shortcut actually works
+    if (ok)                self.obPermHint.stringValue = @"✓ Accessibility granted — the shortcut is active. Click Start.";
+    else if (self.axRequested) self.obPermHint.stringValue = @"Enable AgentShot in System Settings ▸ Privacy ▸ Accessibility, then click Restart.";
+    else                   self.obPermHint.stringValue = @"Tick the box to grant Accessibility (required for the global shortcut).";
 }
 - (void)obToggleAccessibility:(NSButton*)sender {
+    self.axRequested = YES;
     [NSApp activateIgnoringOtherApps:YES]; [self.onboard orderFrontRegardless];
-    AXTrusted(YES);   // prompt + add to the Accessibility list
-    // Deep-link to the Accessibility pane so the user lands in the right place.
-    [[NSWorkspace sharedWorkspace] openURL:[NSURL URLWithString:
-        @"x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"]];
+    AXTrusted(YES);                        // Apple's own prompt (has an "Open System Settings" button)
     [self refreshOnboardingState];
 }
 // Relaunch the app so it re-reads fresh TCC state (Accessibility grant needs a restart).
