@@ -92,10 +92,22 @@ static NSData *ProcessImage(NSURL *url, ShotInfo *info) {
     NSDictionary *p = (__bridge_transfer NSDictionary *)CGImageSourceCopyPropertiesAtIndex(src,0,NULL);
     info->srcW = [p[(id)kCGImagePropertyPixelWidth] integerValue];
     info->srcH = [p[(id)kCGImagePropertyPixelHeight] integerValue];
-    info->srcBytes = (NSInteger)[[NSData dataWithContentsOfURL:url] length];
+    NSData *rawData = [NSData dataWithContentsOfURL:url];
+    info->srcBytes = (NSInteger)rawData.length;
+
+    NSInteger maxEdge = CurrentMaxEdge();
+    NSInteger longEdge = MAX(info->srcW, info->srcH);
+
+    // Fast path: if already within limits (size ≤ cap AND long edge ≤ max), skip re-encoding.
+    // Re-encoding a well-compressed JPEG/PNG can produce LARGER output.
+    if (info->srcBytes <= kByteLimit && longEdge <= maxEdge) {
+        info->outW = info->srcW; info->outH = info->srcH;
+        info->quality = 1.0; info->ok = YES;
+        CFRelease(src);
+        return rawData;
+    }
 
     NSData *best = nil; ShotInfo bi = *info;
-    NSInteger maxEdge = CurrentMaxEdge();
     NSMutableArray<NSNumber*> *edges = [NSMutableArray arrayWithObject:@(maxEdge)];
     for (int i=0;i<3;i++) if (kFallback[i] < maxEdge) [edges addObject:@(kFallback[i])];
     for (NSNumber *en in edges) {
@@ -105,12 +117,29 @@ static NSData *ProcessImage(NSURL *url, ShotInfo *info) {
         for (NSInteger qi=0; qi<kQn; qi++) {
             NSData *data = EncodeJPEG(img, kQ[qi]);
             if (!data) continue;
-            best = data; bi = *info; bi.outW=w; bi.outH=h; bi.quality=kQ[qi]; bi.ok=YES;
-            if ((NSInteger)data.length <= kByteLimit) { CGImageRelease(img); CFRelease(src); *info=bi; return data; }
+            if ((NSInteger)data.length <= kByteLimit) {
+                // Only use compressed version if it's actually smaller than original
+                if ((NSInteger)data.length < info->srcBytes) {
+                    bi.outW=w; bi.outH=h; bi.quality=kQ[qi]; bi.ok=YES;
+                    CGImageRelease(img); CFRelease(src); *info=bi; return data;
+                } else {
+                    // Compressed result is bigger — prefer raw original
+                    bi.outW=info->srcW; bi.outH=info->srcH; bi.quality=1.0; bi.ok=YES;
+                    CGImageRelease(img); CFRelease(src); *info=bi; return rawData;
+                }
+            }
+            best = data; bi.outW=w; bi.outH=h; bi.quality=kQ[qi]; bi.ok=YES;
         }
         CGImageRelease(img);
     }
-    CFRelease(src); *info = bi; return best;
+    // If we got here, even most aggressive compression exceeds kByteLimit.
+    // Return best effort but guard against bloat.
+    if (best && (NSInteger)best.length < info->srcBytes) {
+        CFRelease(src); *info = bi; return best;
+    }
+    // All attempts bigger than original — return original
+    bi.outW=info->srcW; bi.outH=info->srcH; bi.quality=1.0; bi.ok=YES;
+    CFRelease(src); *info = bi; return rawData;
 }
 static void PutOnPasteboard(NSData *data, NSString *type) {
     NSPasteboard *pb = [NSPasteboard generalPasteboard];
@@ -389,7 +418,13 @@ typedef NS_ENUM(NSInteger, AnnotTool) { AnnotRect=0, AnnotArrow, AnnotText, Anno
     _dragging = NO;
     _dragEnd = [self convertPoint:e.locationInWindow fromView:nil];
     NSRect sel = [self selRect];
-    if (sel.size.width < 3 || sel.size.height < 3) { if (self.onCancel) self.onCancel(); return; }
+    if (sel.size.width < 3 || sel.size.height < 3) {
+        // No drag / tiny drag → capture full screen
+        NSRect b = self.bounds;
+        CGRect fullCrop = CGRectMake(0, 0, CGImageGetWidth(_frozen), CGImageGetHeight(_frozen));
+        if (self.onDone) self.onDone(fullCrop);
+        return;
+    }
     if (self.onDone) {
         // convert to screen-pixel rect for CGImage crop
         CGFloat scale = self.window.backingScaleFactor;
@@ -769,6 +804,7 @@ typedef NS_ENUM(NSInteger, AnnotTool) { AnnotRect=0, AnnotArrow, AnnotText, Anno
     editBtn.frame=NSMakeRect(pad, pad-2+barH-6+4, 50, 22); editBtn.bezelStyle=NSBezelStyleRounded;
     [p.contentView addSubview:editBtn];
     self.preview=p; [p center]; [NSApp activateIgnoringOtherApps:YES]; [p makeKeyAndOrderFront:nil];
+    [p makeFirstResponder:p.contentView];  // ensure Esc key events reach us
     __weak typeof(self) ws=self;
     self.keyMon=[NSEvent addLocalMonitorForEventsMatchingMask:NSEventMaskKeyDown handler:^NSEvent *(NSEvent *ev){ return [ws handlePreviewKey:ev]; }];
 }
