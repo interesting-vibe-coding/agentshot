@@ -33,11 +33,12 @@ static NSInteger CurrentMaxEdge(void) {
 }
 static UInt32 CurrentHKCode(void) {
     id v = [[NSUserDefaults standardUserDefaults] objectForKey:kHKCodeKey];
-    return v ? (UInt32)[v integerValue] : (UInt32)kVK_F1;   // default F1 (we steal it via event tap)
+    return v ? (UInt32)[v integerValue] : (UInt32)kVK_ANSI_2;   // default ⌘⇧2 — F-keys are media keys
+                                                                // on most Macs and never reach a keyDown tap
 }
 static UInt32 CurrentHKMods(void) {
     id v = [[NSUserDefaults standardUserDefaults] objectForKey:kHKModKey];
-    return v ? (UInt32)[v integerValue] : 0;
+    return v ? (UInt32)[v integerValue] : (UInt32)(cmdKey|shiftKey);   // default ⌘⇧2
 }
 static NSString *ShortcutLabel(UInt32 code, UInt32 mods) {
     NSMutableString *s = [NSMutableString string];
@@ -138,6 +139,9 @@ static CGEventRef TapCB(CGEventTapProxy proxy, CGEventType type, CGEventRef e, v
     }
     if (type == kCGEventKeyDown) {
         CGKeyCode kc = (CGKeyCode)CGEventGetIntegerValueField(e, kCGKeyboardEventKeycode);
+        CGEventFlags fl = CGEventGetFlags(e);
+        if (getenv("ASDEBUG")) NSLog(@"[AS] keyDown kc=%d flags=0x%llx (want kc=%d flags=0x%llx)",
+                                     kc, (unsigned long long)fl, kt.code, (unsigned long long)kt.flags);
         // F3 (keyCode 99): pin clipboard image
         if (kc == 99) {
             dispatch_async(dispatch_get_main_queue(), ^{
@@ -147,10 +151,13 @@ static CGEventRef TapCB(CGEventTapProxy proxy, CGEventType type, CGEventRef e, v
         }
         CGEventFlags mask = kCGEventFlagMaskCommand|kCGEventFlagMaskShift|kCGEventFlagMaskAlternate|kCGEventFlagMaskControl;
         if (kc == kt.code && (CGEventGetFlags(e) & mask) == kt.flags) {
+            if (getenv("ASDEBUG")) NSLog(@"[AS] MATCH → firing capture");
             void (^fire)(void) = kt.onFire;
             if (fire) dispatch_async(dispatch_get_main_queue(), fire);
             return NULL;   // consume → steal from other apps (e.g. Snipaste)
         }
+    } else if (getenv("ASDEBUG") && type == NSEventTypeSystemDefined) {
+        NSLog(@"[AS] systemDefined event (a media/F-key like plain F1/brightness lands here, NOT keyDown)");
     }
     return e;
 }
@@ -160,13 +167,15 @@ static CGEventRef TapCB(CGEventTapProxy proxy, CGEventType type, CGEventRef e, v
     if (_tap) { CFMachPortInvalidate(_tap); CFRelease(_tap); _tap=NULL; }
     _active = NO;
     CGEventMask mask = CGEventMaskBit(kCGEventKeyDown);
+    if (getenv("ASDEBUG")) mask |= CGEventMaskBit(NSEventTypeSystemDefined);  // observe media/F-keys
     _tap = CGEventTapCreate(kCGSessionEventTap, kCGHeadInsertEventTap, kCGEventTapOptionDefault,
                             mask, TapCB, (__bridge void *)self);
-    if (!_tap) return NO;            // no Accessibility permission
+    if (!_tap) { if (getenv("ASDEBUG")) NSLog(@"[AS] CGEventTapCreate FAILED (not trusted?)"); return NO; }
     _src = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, _tap, 0);
     CFRunLoopAddSource(CFRunLoopGetCurrent(), _src, kCFRunLoopCommonModes);
     CGEventTapEnable(_tap, true);
     _active = YES;
+    if (getenv("ASDEBUG")) NSLog(@"[AS] tap ACTIVE code=%d flags=0x%llx", c, (unsigned long long)f);
     return YES;
 }
 @end
@@ -560,6 +569,7 @@ typedef NS_ENUM(NSInteger, AnnotTool) { AnnotRect=0, AnnotArrow, AnnotText, Anno
 - (void)capture {
     NSString *tmp = [NSTemporaryDirectory() stringByAppendingPathComponent:
         [NSString stringWithFormat:@"agentshot-%@.png", [[NSUUID UUID] UUIDString]]];
+    if (getenv("ASDEBUG")) NSLog(@"[AS] capture() — launching screencapture -i");
     NSTask *t = [[NSTask alloc] init];
     t.executableURL = [NSURL fileURLWithPath:@"/usr/sbin/screencapture"];
     t.arguments = @[@"-i", @"-o", tmp];
@@ -749,7 +759,7 @@ typedef NS_ENUM(NSInteger, AnnotTool) { AnnotRect=0, AnnotArrow, AnnotText, Anno
     BOOL fkey = (code==kVK_F1 || code==kVK_F2);
     NSString *t = [NSString stringWithFormat:@"%@ will be captured system-wide — AgentShot intercepts it first, taking priority over other apps (e.g. Snipaste).",
                    ShortcutLabel(code,mods)];
-    if (fkey) t = [t stringByAppendingString:@"\nOn Macs where F-keys control brightness/volume, press fn+the key (or enable \u201cUse F1, F2 as standard function keys\u201d)."];
+    if (fkey) t = [t stringByAppendingString:@"\n⚠︎ Heads-up: on most Macs F-keys are media keys (brightness/volume) and won't trigger AgentShot unless you enable System Settings ▸ Keyboard ▸ \u201cUse F1, F2, etc. as standard function keys\u201d. A modifier combo like \u2318\u21e72 works everywhere — recommended."];
     self.obHint.stringValue = t;
 }
 - (void)finishOnboarding:(NSButton *)sender {
