@@ -340,7 +340,6 @@ typedef NS_ENUM(NSInteger, AnnotTool) { AnnotRect=0, AnnotArrow, AnnotText, Anno
     self.keyTap = [KeyTap new];
     self.keyTap.onFire = ^{ [ws capture]; };
     [self applyShortcut:NO];
-    if (@available(macOS 11.0, *)) CGRequestScreenCaptureAccess();
 
     if (![[NSUserDefaults standardUserDefaults] boolForKey:kOnboardedKey])
         [self showOnboarding];
