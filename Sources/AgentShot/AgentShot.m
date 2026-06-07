@@ -729,8 +729,19 @@ typedef NS_ENUM(NSInteger, AnnotTool) { AnnotRect=0, AnnotArrow, AnnotText, Anno
     [self applyShortcut:NO];
     [self rebuildMenu];
     [self.onboard close]; self.onboard=nil;
-    if (!self.keyTap.isActive)
-        [self flash:@"Grant Accessibility, then reopen AgentShot"];
+
+    if (!self.keyTap.isActive) {
+        // Tap failed — permissions were just granted but macOS hasn't propagated
+        // them to this process yet. Must quit and reopen.
+        NSAlert *a = [[NSAlert alloc] init];
+        a.messageText = @"Almost there — one more step";
+        a.informativeText = @"Permissions were granted. Please quit AgentShot and reopen it — the global shortcut will be active after restart.";
+        a.alertStyle = NSAlertStyleInformational;
+        [a addButtonWithTitle:@"Quit Now"];
+        [a addButtonWithTitle:@"Later"];
+        if ([a runModal] == NSAlertFirstButtonReturn)
+            [NSApp terminate:nil];
+    }
 }
 @end
 
