@@ -14,6 +14,7 @@
 #import <CoreGraphics/CoreGraphics.h>
 #import <ApplicationServices/ApplicationServices.h>
 #import <objc/runtime.h>
+#import <dlfcn.h>
 
 // MARK: - Config / persisted settings
 static const NSInteger kDefaultEdge = 1568;
@@ -312,6 +313,97 @@ typedef NS_ENUM(NSInteger, AnnotTool) { AnnotRect=0, AnnotArrow, AnnotText, Anno
 }
 @end
 
+// MARK: - Overlay capture
+@interface OverlayView : NSView
+@property (assign) CGImageRef frozen;
+@property (assign) NSPoint dragStart;
+@property (assign) NSPoint dragEnd;
+@property (assign) BOOL dragging;
+@property (copy) void (^onDone)(CGRect selectionInScreen);
+@property (copy) void (^onCancel)(void);
+@end
+
+@implementation OverlayView
+- (instancetype)initWithFrame:(NSRect)f frozen:(CGImageRef)img {
+    self = [super initWithFrame:f];
+    _frozen = CGImageRetain(img);
+    return self;
+}
+- (void)dealloc { if (_frozen) CGImageRelease(_frozen); }
+- (BOOL)acceptsFirstResponder { return YES; }
+- (void)keyDown:(NSEvent *)e {
+    if (e.keyCode == kVK_Escape && self.onCancel) self.onCancel();
+}
+- (void)drawRect:(NSRect)dirtyRect {
+    NSRect b = self.bounds;
+    // draw frozen screenshot
+    CGContextRef ctx = [[NSGraphicsContext currentContext] CGContext];
+    CGContextDrawImage(ctx, b, _frozen);
+    // dark mask
+    [[NSColor colorWithWhite:0 alpha:0.3] set];
+    NSRectFillUsingOperation(b, NSCompositingOperationSourceOver);
+    if (_dragging || (!NSEqualPoints(_dragStart, _dragEnd))) {
+        NSRect sel = [self selRect];
+        if (sel.size.width > 0 && sel.size.height > 0) {
+            // punch hole (clear the selection area back to the screenshot)
+            CGContextSaveGState(ctx);
+            CGContextSetBlendMode(ctx, kCGBlendModeCopy);
+            CGRect cropSrc = CGRectMake(sel.origin.x / b.size.width * CGImageGetWidth(_frozen),
+                                        (1.0 - (sel.origin.y + sel.size.height)/b.size.height) * CGImageGetHeight(_frozen),
+                                        sel.size.width / b.size.width * CGImageGetWidth(_frozen),
+                                        sel.size.height / b.size.height * CGImageGetHeight(_frozen));
+            CGImageRef sub = CGImageCreateWithImageInRect(_frozen, cropSrc);
+            if (sub) { CGContextDrawImage(ctx, sel, sub); CGImageRelease(sub); }
+            CGContextRestoreGState(ctx);
+            // 1px white border
+            [[NSColor whiteColor] set];
+            NSFrameRect(sel);
+            // size label
+            NSInteger w = (NSInteger)round(sel.size.width * self.window.backingScaleFactor);
+            NSInteger h = (NSInteger)round(sel.size.height * self.window.backingScaleFactor);
+            NSString *sizeStr = [NSString stringWithFormat:@"%ld×%ld", (long)w, (long)h];
+            NSDictionary *attrs = @{NSFontAttributeName:[NSFont monospacedSystemFontOfSize:11 weight:NSFontWeightMedium],
+                                    NSForegroundColorAttributeName:[NSColor whiteColor],
+                                    NSBackgroundColorAttributeName:[NSColor colorWithWhite:0 alpha:0.6]};
+            NSSize ts = [sizeStr sizeWithAttributes:attrs];
+            NSPoint tp = NSMakePoint(NSMidX(sel) - ts.width/2, sel.origin.y - ts.height - 4);
+            if (tp.y < 0) tp.y = sel.origin.y + sel.size.height + 4;
+            [sizeStr drawAtPoint:tp withAttributes:attrs];
+        }
+    }
+}
+- (NSRect)selRect {
+    CGFloat x = MIN(_dragStart.x, _dragEnd.x), y = MIN(_dragStart.y, _dragEnd.y);
+    CGFloat w = fabs(_dragEnd.x - _dragStart.x), h = fabs(_dragEnd.y - _dragStart.y);
+    return NSMakeRect(x, y, w, h);
+}
+- (void)mouseDown:(NSEvent *)e {
+    _dragStart = [self convertPoint:e.locationInWindow fromView:nil];
+    _dragEnd = _dragStart; _dragging = YES; [self setNeedsDisplay:YES];
+}
+- (void)mouseDragged:(NSEvent *)e {
+    _dragEnd = [self convertPoint:e.locationInWindow fromView:nil];
+    [self setNeedsDisplay:YES];
+}
+- (void)mouseUp:(NSEvent *)e {
+    _dragging = NO;
+    _dragEnd = [self convertPoint:e.locationInWindow fromView:nil];
+    NSRect sel = [self selRect];
+    if (sel.size.width < 3 || sel.size.height < 3) { if (self.onCancel) self.onCancel(); return; }
+    if (self.onDone) {
+        // convert to screen-pixel rect for CGImage crop
+        CGFloat scale = self.window.backingScaleFactor;
+        NSRect b = self.bounds;
+        CGFloat imgW = CGImageGetWidth(_frozen), imgH = CGImageGetHeight(_frozen);
+        CGRect crop = CGRectMake(sel.origin.x / b.size.width * imgW,
+                                 (1.0 - (sel.origin.y + sel.size.height)/b.size.height) * imgH,
+                                 sel.size.width / b.size.width * imgW,
+                                 sel.size.height / b.size.height * imgH);
+        self.onDone(crop);
+    }
+}
+@end
+
 // MARK: - App delegate
 @interface AppDelegate : NSObject <NSApplicationDelegate>
 @property (strong) NSStatusItem *statusItem;
@@ -334,6 +426,7 @@ typedef NS_ENUM(NSInteger, AnnotTool) { AnnotRect=0, AnnotArrow, AnnotText, Anno
 @property (strong) NSMutableArray *pinWindows;
 @property (strong) AnnotView *annotView;
 @property (strong) NSPanel *annotPanel;
+@property (strong) NSWindow *overlayWindow;
 - (void)capture;
 - (void)pinClipboard;
 - (void)closeMostRecentPin;
@@ -382,19 +475,37 @@ typedef NS_ENUM(NSInteger, AnnotTool) { AnnotRect=0, AnnotArrow, AnnotText, Anno
 // ---- Menu ----
 - (void)rebuildMenu {
     NSMenu *m = [[NSMenu alloc] init];
-    NSString *sc = ShortcutLabel(CurrentHKCode(), CurrentHKMods());
-    [m addItemWithTitle:[NSString stringWithFormat:@"Capture & compress  截图  (%@)", sc]
-                 action:@selector(capture) keyEquivalent:@""];
-    [m addItemWithTitle:@"Pin clipboard image  F3" action:@selector(pinClipboard) keyEquivalent:@""];
-    [m addItemWithTitle:@"Pick color" action:@selector(startColorPicker) keyEquivalent:@""];
+
+    // — Actions —
+    NSMenuItem *cap = [[NSMenuItem alloc] initWithTitle:@"Capture Region" action:@selector(capture) keyEquivalent:@""];
+    cap.toolTip = @"截图并自动压缩到剪贴板";
+    UInt32 cc = CurrentHKCode(), cm = CurrentHKMods();
+    if (cm & cmdKey)   cap.keyEquivalentModifierMask |= NSEventModifierFlagCommand;
+    if (cm & shiftKey) cap.keyEquivalentModifierMask |= NSEventModifierFlagShift;
+    if (cm & optionKey) cap.keyEquivalentModifierMask |= NSEventModifierFlagOption;
+    if (cm & controlKey) cap.keyEquivalentModifierMask |= NSEventModifierFlagControl;
+    NSDictionary *keyNames = @{ @(kVK_F1):@"\uF704", @(kVK_F2):@"\uF705",
+                                @(kVK_ANSI_2):@"2", @(kVK_ANSI_5):@"5" };
+    cap.keyEquivalent = keyNames[@(cc)] ?: @"";
+    [m addItem:cap];
+
+    NSMenuItem *pin = [[NSMenuItem alloc] initWithTitle:@"Pin Clipboard" action:@selector(pinClipboard) keyEquivalent:@"\uF706"];
+    pin.keyEquivalentModifierMask = 0;
+    pin.toolTip = @"将剪贴板图片钉在屏幕上";
+    [m addItem:pin];
+
+    NSMenuItem *color = [[NSMenuItem alloc] initWithTitle:@"Color Picker" action:@selector(startColorPicker) keyEquivalent:@""];
+    color.toolTip = @"取色并复制 HEX 到剪贴板";
+    [m addItem:color];
+
     [m addItem:[NSMenuItem separatorItem]];
 
-    NSMenuItem *scItem = [[NSMenuItem alloc] initWithTitle:@"Shortcut  快捷键" action:nil keyEquivalent:@""];
+    // — Settings —
+    NSMenuItem *scItem = [[NSMenuItem alloc] initWithTitle:@"Shortcut" action:nil keyEquivalent:@""];
     NSMenu *scMenu = [[NSMenu alloc] init];
     NSArray *opts = @[@[@"F1", @(kVK_F1), @0], @[@"F2", @(kVK_F2), @0],
                       @[@"⌘⇧2", @(kVK_ANSI_2), @(cmdKey|shiftKey)],
                       @[@"⌘⇧5", @(kVK_ANSI_5), @(cmdKey|shiftKey)]];
-    UInt32 cc = CurrentHKCode(), cm = CurrentHKMods();
     for (NSArray *o in opts) {
         NSMenuItem *it = [[NSMenuItem alloc] initWithTitle:o[0] action:@selector(setShortcut:) keyEquivalent:@""];
         it.tag = [o[1] integerValue]; it.representedObject = o[2];
@@ -403,11 +514,12 @@ typedef NS_ENUM(NSInteger, AnnotTool) { AnnotRect=0, AnnotArrow, AnnotText, Anno
     }
     scItem.submenu = scMenu; [m addItem:scItem];
 
-    NSMenuItem *qItem = [[NSMenuItem alloc] initWithTitle:@"Quality  压缩档位" action:nil keyEquivalent:@""];
+    NSMenuItem *qItem = [[NSMenuItem alloc] initWithTitle:@"Quality" action:nil keyEquivalent:@""];
+    qItem.toolTip = @"压缩档位（长边像素上限）";
     NSMenu *qMenu = [[NSMenu alloc] init];
-    NSArray *tiers = @[@[@"Max savings 极致省 · 1024px", @1024],
-                       @[@"Balanced 平衡 · 1568px", @1568],
-                       @[@"High fidelity 高保真 · 2560px", @2560]];
+    NSArray *tiers = @[@[@"Compact (1024px)", @1024],
+                       @[@"Balanced (1568px)", @1568],
+                       @[@"High Fidelity (2560px)", @2560]];
     NSInteger ce = CurrentMaxEdge();
     for (NSArray *t in tiers) {
         NSMenuItem *it = [[NSMenuItem alloc] initWithTitle:t[0] action:@selector(setTier:) keyEquivalent:@""];
@@ -417,17 +529,19 @@ typedef NS_ENUM(NSInteger, AnnotTool) { AnnotRect=0, AnnotArrow, AnnotText, Anno
     }
     qItem.submenu = qMenu; [m addItem:qItem];
 
-    NSMenuItem *login = [[NSMenuItem alloc] initWithTitle:@"Launch at login  开机自启"
+    NSMenuItem *login = [[NSMenuItem alloc] initWithTitle:@"Launch at Login"
                           action:@selector(toggleLogin:) keyEquivalent:@""];
     login.state = [self loginEnabled] ? NSControlStateValueOn : NSControlStateValueOff;
+    login.toolTip = @"开机自动启动";
     login.target = self; [m addItem:login];
 
     [m addItem:[NSMenuItem separatorItem]];
-    [[m addItemWithTitle:@"After capture: C copy · ⇧C original · Esc cancel" action:nil keyEquivalent:@""] setEnabled:NO];
-    [m addItem:[NSMenuItem separatorItem]];
+
+    // — Quit —
     [m addItemWithTitle:@"Quit AgentShot" action:@selector(terminate:) keyEquivalent:@"q"];
+
     self.statusItem.menu = m;
-    self.statusItem.button.toolTip = [NSString stringWithFormat:@"AgentShot — 截图自动压缩 (%@)", sc];
+    self.statusItem.button.toolTip = @"AgentShot";
 }
 
 - (void)setShortcut:(NSMenuItem *)sender {
@@ -567,15 +681,60 @@ typedef NS_ENUM(NSInteger, AnnotTool) { AnnotRect=0, AnnotArrow, AnnotText, Anno
 
 // ---- Capture flow ----
 - (void)capture {
-    NSString *tmp = [NSTemporaryDirectory() stringByAppendingPathComponent:
-        [NSString stringWithFormat:@"agentshot-%@.png", [[NSUUID UUID] UUIDString]]];
-    if (getenv("ASDEBUG")) NSLog(@"[AS] capture() — launching screencapture -i");
-    NSTask *t = [[NSTask alloc] init];
-    t.executableURL = [NSURL fileURLWithPath:@"/usr/sbin/screencapture"];
-    t.arguments = @[@"-i", @"-o", tmp];
+    // Freeze the main display (dynamically call CGDisplayCreateImage to bypass macOS 15 SDK unavailability)
+    CGDirectDisplayID displayID = CGMainDisplayID();
+    typedef CGImageRef (*CGDisplayCreateImageFunc)(CGDirectDisplayID);
+    CGDisplayCreateImageFunc createImg = (CGDisplayCreateImageFunc)dlsym(RTLD_DEFAULT, "CGDisplayCreateImage");
+    CGImageRef frozen = createImg ? createImg(displayID) : NULL;
+    if (!frozen) { [self flash:@"✗ capture failed"]; return; }
+
+    NSScreen *screen = [NSScreen mainScreen];
+    NSRect frame = screen.frame;
+
+    NSWindow *w = [[NSWindow alloc] initWithContentRect:frame
+        styleMask:NSWindowStyleMaskBorderless backing:NSBackingStoreBuffered defer:NO];
+    w.level = NSScreenSaverWindowLevel - 1;
+    w.opaque = NO;
+    w.backgroundColor = [NSColor clearColor];
+    w.hasShadow = NO;
+    w.ignoresMouseEvents = NO;
+    w.releasedWhenClosed = NO;
+    if (@available(macOS 12.0, *)) w.sharingType = NSWindowSharingNone;
+    w.collectionBehavior = NSWindowCollectionBehaviorStationary | NSWindowCollectionBehaviorCanJoinAllSpaces;
+
+    OverlayView *ov = [[OverlayView alloc] initWithFrame:NSMakeRect(0, 0, frame.size.width, frame.size.height) frozen:frozen];
+    CGImageRelease(frozen);
+    [w setContentView:ov];
+    self.overlayWindow = w;
+
     __weak typeof(self) ws = self;
-    t.terminationHandler = ^(NSTask *x){ (void)x; dispatch_async(dispatch_get_main_queue(), ^{ [ws handleCaptured:tmp]; }); };
-    NSError *e=nil; if (![t launchAndReturnError:&e]) [self flash:@"✗ capture failed"];
+    ov.onCancel = ^{
+        [ws.overlayWindow orderOut:nil];
+        ws.overlayWindow = nil;
+    };
+    __weak OverlayView *wov = ov;
+    ov.onDone = ^(CGRect cropRect) {
+        CGImageRef cropped = CGImageCreateWithImageInRect(wov.frozen, cropRect);
+        [ws.overlayWindow orderOut:nil];
+        ws.overlayWindow = nil;
+        if (!cropped) { [ws flash:@"✗ crop failed"]; return; }
+        // Save to temp PNG and feed into existing pipeline
+        NSString *tmp = [NSTemporaryDirectory() stringByAppendingPathComponent:
+            [NSString stringWithFormat:@"agentshot-%@.png", [[NSUUID UUID] UUIDString]]];
+        NSURL *url = [NSURL fileURLWithPath:tmp];
+        CGImageDestinationRef dest = CGImageDestinationCreateWithURL((__bridge CFURLRef)url,
+            (__bridge CFStringRef)UTTypePNG.identifier, 1, NULL);
+        if (dest) {
+            CGImageDestinationAddImage(dest, cropped, NULL);
+            CGImageDestinationFinalize(dest);
+            CFRelease(dest);
+        }
+        CGImageRelease(cropped);
+        [ws handleCaptured:tmp];
+    };
+
+    [w makeKeyAndOrderFront:nil];
+    [w makeFirstResponder:ov];
 }
 - (void)handleCaptured:(NSString *)path {
     NSFileManager *fm = [NSFileManager defaultManager];
@@ -658,6 +817,9 @@ typedef NS_ENUM(NSInteger, AnnotTool) { AnnotRect=0, AnnotArrow, AnnotText, Anno
     NSWindow *w = [[NSWindow alloc] initWithContentRect:NSMakeRect(0,0,480,360)
         styleMask:(NSWindowStyleMaskTitled|NSWindowStyleMaskClosable) backing:NSBackingStoreBuffered defer:NO];
     w.title=@"Welcome to AgentShot"; NSView *c=w.contentView;
+    // Under ARC, a window defaults to releasedWhenClosed=YES; combined with our strong
+    // `self.onboard` property, [close] + (self.onboard=nil) double-frees it → crash on Start.
+    w.releasedWhenClosed = NO;
     // Normal level — NOT floating. A floating window sits ABOVE the system's
     // Accessibility permission dialog and hides it. We foreground it instead via
     // activateIgnoringOtherApps + orderFrontRegardless (below), which brings it to
@@ -696,11 +858,9 @@ typedef NS_ENUM(NSInteger, AnnotTool) { AnnotRect=0, AnnotArrow, AnnotText, Anno
     self.obPermHint.frame=NSMakeRect(26,58,432,22); self.obPermHint.font=[NSFont systemFontOfSize:10];
     self.obPermHint.textColor=[NSColor secondaryLabelColor]; [c addSubview:self.obPermHint];
 
-    NSButton *restart=[NSButton buttonWithTitle:@"Restart" target:self action:@selector(relaunchApp)];
-    restart.frame=NSMakeRect(286,18,86,30); restart.bezelStyle=NSBezelStyleRounded; [c addSubview:restart];
-
     self.obStart=[NSButton buttonWithTitle:@"Start" target:self action:@selector(finishOnboarding:)];
-    self.obStart.frame=NSMakeRect(380,18,80,30); self.obStart.bezelStyle=NSBezelStyleRounded; [c addSubview:self.obStart];
+    self.obStart.frame=NSMakeRect(372,18,88,30); self.obStart.bezelStyle=NSBezelStyleRounded;
+    self.obStart.keyEquivalent=@"\r"; [c addSubview:self.obStart];
     self.obPop=pop;
 
     self.onboard=w;
@@ -732,23 +892,13 @@ typedef NS_ENUM(NSInteger, AnnotTool) { AnnotRect=0, AnnotArrow, AnnotText, Anno
     self.obStart.enabled = active;
 
     if (active)        self.obPermHint.stringValue = @"✓ Accessibility on — the shortcut is active. Click Start.";
-    else if (trusted)  self.obPermHint.stringValue = @"Granted ✓ — click Restart to activate the shortcut.";
+    else if (trusted)  self.obPermHint.stringValue = @"Granted ✓ — activating the shortcut…";
     else               self.obPermHint.stringValue = @"Tick the box, then enable AgentShot in System Settings ▸ Privacy ▸ Accessibility.";
 }
 - (void)obToggleAccessibility:(NSButton*)sender {
     [NSApp activateIgnoringOtherApps:YES]; [self.onboard orderFrontRegardless];
     AXTrusted(YES);                               // Apple's own prompt (has "Open System Settings")
     [self refreshOnboardingState];                // snaps to real system state (stays unchecked until granted)
-}
-// Relaunch the app so it re-reads fresh TCC state (Accessibility grant needs a restart).
-- (void)relaunchApp {
-    [self.obTimer invalidate]; self.obTimer=nil;
-    NSString *p = [[NSBundle mainBundle] bundlePath];
-    NSTask *t = [[NSTask alloc] init];
-    t.executableURL = [NSURL fileURLWithPath:@"/bin/sh"];
-    t.arguments = @[@"-c", [NSString stringWithFormat:@"sleep 0.4; open \"%@\"", p]];
-    [t launch];
-    [NSApp terminate:nil];
 }
 - (void)obIndex:(NSInteger)i code:(UInt32*)code mods:(UInt32*)mods {
     switch (i) { case 1:*code=kVK_F2;*mods=0;break; case 2:*code=kVK_ANSI_2;*mods=cmdKey|shiftKey;break;
